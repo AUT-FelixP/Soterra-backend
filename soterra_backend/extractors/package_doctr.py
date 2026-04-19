@@ -6,9 +6,6 @@ from collections import Counter
 from pathlib import Path
 
 import fitz
-from presidio_analyzer import RecognizerResult
-from presidio_anonymizer import AnonymizerEngine
-from presidio_anonymizer.entities import OperatorConfig
 
 from ..config import Settings
 from ..models import ExtractedFinding, ExtractionResult, PredictedInspection
@@ -463,6 +460,11 @@ def _clean_value(value: str) -> str:
 
 
 def _detect_pii(text: str) -> list[RecognizerResult]:
+    try:
+        from presidio_analyzer import RecognizerResult
+    except ModuleNotFoundError:
+        return []
+
     findings: list[RecognizerResult] = []
 
     for match in EMAIL_PATTERN.finditer(text):
@@ -491,6 +493,12 @@ def _detect_pii(text: str) -> list[RecognizerResult]:
 def _redact_text(text: str) -> str:
     pii_results = _detect_pii(text)
     if not pii_results:
+        return text
+
+    try:
+        from presidio_anonymizer import AnonymizerEngine
+        from presidio_anonymizer.entities import OperatorConfig
+    except ModuleNotFoundError:
         return text
 
     anonymized = AnonymizerEngine().anonymize(

@@ -4,7 +4,6 @@ from ..config import Settings
 from .base import ExtractorBackend
 from .demo import DemoExtractor
 from .openai_model import OpenAIModelExtractor
-from .package_doctr import DoctrRulesPresidioExtractor
 
 
 def build_extractor(settings: Settings) -> ExtractorBackend:
@@ -12,6 +11,8 @@ def build_extractor(settings: Settings) -> ExtractorBackend:
 
     if mode == "package":
         if settings.package_extractor == "doctr_rules_presidio":
+            from .package_doctr import DoctrRulesPresidioExtractor
+
             return DoctrRulesPresidioExtractor(settings)
         raise RuntimeError(f"Unsupported package extractor: {settings.package_extractor}")
 
