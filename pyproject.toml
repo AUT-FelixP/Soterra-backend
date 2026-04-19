@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "soterra-backend"
+version = "0.1.0"
+description = "Python backend package for Soterra inspection extraction and analytics."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.116,<1",
+  "httpx>=0.28,<1",
+  "openai>=2.0.0,<3",
+  "pydantic>=2.11,<3",
+  "presidio-analyzer>=2.2,<3",
+  "presidio-anonymizer>=2.2,<3",
+  "PyMuPDF>=1.26,<2",
+  "python-doctr>=0.11,<1",
+  "python-multipart>=0.0.20,<1",
+  "supabase>=2.16,<3",
+  "uvicorn>=0.35,<1",
+]
+
+[project.optional-dependencies]
+demo = ["easyocr>=1.7,<2"]
+
+[project.scripts]
+app = "soterra_backend.api:app"
+
+[tool.setuptools.package-dir]
+"" = "."
+
+[tool.setuptools.packages.find]
+where = ["."]
