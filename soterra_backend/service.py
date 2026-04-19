@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -160,18 +161,25 @@ class ReportIngestionService:
         return report
 
     def _extract(self, upload: UploadContext, stored_file) -> tuple[ExtractionResult, str, str]:
-        pdf_path = Path(stored_file.storage_path)
-        artifacts = self.extractor.extract(
-            ExtractionRequest(
-                filename=upload.filename,
-                content=upload.content,
-                project_name=upload.project_name,
-                site_name=upload.site_name,
-                trade=upload.trade,
-                address=upload.address,
-            ),
-            pdf_path,
-        )
+        with tempfile.NamedTemporaryFile(suffix=".pdf", prefix="soterra-upload-", delete=False) as tmp_file:
+            tmp_file.write(upload.content)
+            temp_pdf_path = Path(tmp_file.name)
+
+        try:
+            artifacts = self.extractor.extract(
+                ExtractionRequest(
+                    filename=upload.filename,
+                    content=upload.content,
+                    project_name=upload.project_name,
+                    site_name=upload.site_name,
+                    trade=upload.trade,
+                    address=upload.address,
+                ),
+                temp_pdf_path,
+            )
+        finally:
+            temp_pdf_path.unlink(missing_ok=True)
+
         return artifacts.extraction, artifacts.raw_text, artifacts.extractor_name
 
 
