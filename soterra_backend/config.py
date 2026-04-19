@@ -26,6 +26,13 @@ def _default_local_data_dir(repo_root: Path) -> Path:
     return repo_root / "artifacts" / "backend"
 
 
+def _default_process_inline() -> bool:
+    # Vercel serverless requests should complete the extraction before responding.
+    # FastAPI BackgroundTasks are not a durable job queue and can leave uploads stuck
+    # in "Extracting" when the request lifecycle ends before the background work finishes.
+    return bool(os.getenv("VERCEL"))
+
+
 @dataclass(frozen=True)
 class Settings:
     repo_root: Path
@@ -77,7 +84,7 @@ class Settings:
             package_extractor=os.getenv("SOTERRA_PACKAGE_EXTRACTOR", "doctr_rules_presidio").strip(),
             model_extractor=os.getenv("SOTERRA_MODEL_EXTRACTOR", "openai").strip(),
             allow_model_extraction=_to_bool(os.getenv("SOTERRA_ALLOW_MODEL_EXTRACTION"), False),
-            process_inline=_to_bool(os.getenv("SOTERRA_PROCESS_INLINE"), False),
+            process_inline=_to_bool(os.getenv("SOTERRA_PROCESS_INLINE"), _default_process_inline()),
             local_data_dir=local_data_dir,
             local_db_path=Path(
                 os.getenv(
