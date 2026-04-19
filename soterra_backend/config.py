@@ -19,6 +19,13 @@ def _find_project_root() -> Path:
     return current.parents[1]
 
 
+def _default_local_data_dir(repo_root: Path) -> Path:
+    # Vercel functions run on a read-only filesystem except for /tmp.
+    if os.getenv("VERCEL"):
+        return Path("/tmp") / "soterra-backend"
+    return repo_root / "artifacts" / "backend"
+
+
 @dataclass(frozen=True)
 class Settings:
     repo_root: Path
@@ -43,7 +50,7 @@ class Settings:
     @classmethod
     def from_env(cls) -> "Settings":
         repo_root = _find_project_root()
-        local_data_dir = repo_root / "artifacts" / "backend"
+        local_data_dir = _default_local_data_dir(repo_root)
 
         openai_api_key = os.getenv("OPENAI_API_KEY")
         supabase_url = os.getenv("SUPABASE_URL")
