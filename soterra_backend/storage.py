@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+import unicodedata
 from pathlib import Path
 from typing import Protocol
 
@@ -39,13 +41,27 @@ class SupabaseFileStorage:
         self.bucket = bucket
 
     def store(self, *, document_id: str, filename: str, content: bytes, content_type: str) -> StoredFile:
-        path = f"{document_id}/{filename}"
-        self.client.storage.from_(self.bucket).upload(
-            path,
-            content,
-            file_options={"content-type": content_type, "upsert": "true"},
-        )
-        signed = self.client.storage.from_(self.bucket).create_signed_url(path, 3600)
+        safe_name = _safe_storage_filename(filename)
+        path = f"{document_id}/{safe_name}"
+
+        try:
+            self.client.storage.from_(self.bucket).upload(
+                path=path,
+                file=content,
+                file_options={"content-type": content_type, "upsert": "true"},
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"Supabase storage upload failed for bucket '{self.bucket}'. "
+                "Make sure the bucket exists and the secret key has storage access."
+            ) from exc
+
+        signed = None
+        try:
+            signed = self.client.storage.from_(self.bucket).create_signed_url(path, 3600)
+        except Exception:
+            signed = None
+
         signed_url = None
         if isinstance(signed, dict):
             signed_url = signed.get("signedURL") or signed.get("signedUrl")
@@ -66,3 +82,9 @@ def build_storage(settings: Settings) -> StorageBackend:
 
     return LocalFileStorage(settings.local_storage_dir)
 
+
+def _safe_storage_filename(filename: str) -> str:
+    cleaned = unicodedata.normalize("NFKD", filename).encode("ascii", "ignore").decode("ascii")
+    cleaned = cleaned.replace("\\", "-").replace("/", "-")
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", cleaned).strip(".-")
+    return cleaned or "uploaded-report.pdf"
