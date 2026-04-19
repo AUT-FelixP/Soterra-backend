@@ -1,5 +1,10 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/**/*.py": {
+      "excludeFiles": "{soterra_backend/tests/**,tests/**,__tests__/**,**/*.test.py,**/test_*.py,supabase/**,.git/**,.github/**,.venv/**,artifacts/**,README.md,.env,.env.*,app.py}"
+    }
+  },
   "rewrites": [
     {
       "source": "/(.*)",
@@ -7,4 +12,3 @@
     }
   ]
 }
-
