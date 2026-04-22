@@ -1,6 +1,37 @@
+CREATE TABLE IF NOT EXISTS tenants (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  slug TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  email TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('admin', 'member')),
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(tenant_id) REFERENCES tenants(id)
+);
+
+CREATE TABLE IF NOT EXISTS auth_sessions (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  tenant_id TEXT NOT NULL,
+  token_hash TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  revoked_at TEXT,
+  FOREIGN KEY(user_id) REFERENCES users(id),
+  FOREIGN KEY(tenant_id) REFERENCES tenants(id)
+);
+
 CREATE TABLE IF NOT EXISTS projects (
   id TEXT PRIMARY KEY,
-  slug TEXT NOT NULL UNIQUE,
+  tenant_id TEXT NOT NULL,
+  slug TEXT NOT NULL,
   name TEXT NOT NULL,
   site_name TEXT NOT NULL,
   address TEXT,
@@ -9,9 +40,10 @@ CREATE TABLE IF NOT EXISTS projects (
 
 CREATE TABLE IF NOT EXISTS documents (
   id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
   project_id TEXT NOT NULL,
-  file_hash TEXT NOT NULL UNIQUE,
-  file_tag TEXT NOT NULL UNIQUE,
+  file_hash TEXT NOT NULL,
+  file_tag TEXT NOT NULL,
   source_filename TEXT NOT NULL,
   storage_path TEXT NOT NULL,
   download_url TEXT,
@@ -41,6 +73,7 @@ CREATE TABLE IF NOT EXISTS jobs (
 
 CREATE TABLE IF NOT EXISTS findings (
   id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
   document_id TEXT NOT NULL,
   project_id TEXT NOT NULL,
   title TEXT NOT NULL,
@@ -62,6 +95,7 @@ CREATE TABLE IF NOT EXISTS findings (
 
 CREATE TABLE IF NOT EXISTS predicted_inspections (
   id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
   project_id TEXT NOT NULL,
   inspection_type TEXT NOT NULL,
   site_name TEXT NOT NULL,
@@ -73,19 +107,37 @@ CREATE TABLE IF NOT EXISTS predicted_inspections (
 );
 
 CREATE INDEX IF NOT EXISTS idx_documents_project_date
-  ON documents(project_id, report_date DESC);
+  ON documents(tenant_id, project_id, report_date DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_lower_unique
+  ON users(lower(email));
+
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_token_hash
+  ON auth_sessions(token_hash);
+
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_tenant
+  ON auth_sessions(user_id, tenant_id);
 
 CREATE INDEX IF NOT EXISTS idx_documents_file_hash
-  ON documents(file_hash);
+  ON documents(tenant_id, file_hash);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_tenant_slug_unique
+  ON projects(tenant_id, slug);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_tenant_file_hash_unique
+  ON documents(tenant_id, file_hash);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_tenant_file_tag_unique
+  ON documents(tenant_id, file_tag);
 
 CREATE INDEX IF NOT EXISTS idx_findings_document
   ON findings(document_id);
 
 CREATE INDEX IF NOT EXISTS idx_findings_status
-  ON findings(status);
+  ON findings(tenant_id, status);
 
 CREATE INDEX IF NOT EXISTS idx_predicted_inspections_date
-  ON predicted_inspections(expected_date);
+  ON predicted_inspections(tenant_id, expected_date);
 
 CREATE VIEW IF NOT EXISTS analytics_report_summary_v AS
 SELECT

@@ -35,6 +35,8 @@ def _default_process_inline() -> bool:
 
 @dataclass(frozen=True)
 class Settings:
+    app_env: str
+    enable_docs: bool
     repo_root: Path
     storage_mode: str
     repository_mode: str
@@ -53,6 +55,10 @@ class Settings:
     supabase_url: str | None
     supabase_service_role_key: str | None
     supabase_bucket: str
+    auth_session_ttl_hours: int
+    max_upload_bytes: int
+    bootstrap_demo_account: bool
+    demo_admin_password: str | None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -62,6 +68,7 @@ class Settings:
         openai_api_key = os.getenv("OPENAI_API_KEY")
         supabase_url = os.getenv("SUPABASE_URL")
         supabase_service_role_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        app_env = os.getenv("SOTERRA_ENV", "production" if os.getenv("VERCEL") else "development").strip().lower()
 
         repository_mode = os.getenv(
             "SOTERRA_REPOSITORY_MODE",
@@ -77,6 +84,8 @@ class Settings:
         ).strip()
 
         return cls(
+            app_env=app_env,
+            enable_docs=_to_bool(os.getenv("SOTERRA_ENABLE_DOCS"), app_env != "production"),
             repo_root=repo_root,
             storage_mode=storage_mode,
             repository_mode=repository_mode,
@@ -105,4 +114,8 @@ class Settings:
             supabase_url=supabase_url,
             supabase_service_role_key=supabase_service_role_key,
             supabase_bucket=os.getenv("SUPABASE_STORAGE_BUCKET", "inspection-reports"),
+            auth_session_ttl_hours=int(os.getenv("SOTERRA_AUTH_SESSION_TTL_HOURS", "12")),
+            max_upload_bytes=int(os.getenv("SOTERRA_MAX_UPLOAD_BYTES", str(10 * 1024 * 1024))),
+            bootstrap_demo_account=_to_bool(os.getenv("SOTERRA_BOOTSTRAP_DEMO_ACCOUNT"), False),
+            demo_admin_password=os.getenv("SOTERRA_DEMO_ADMIN_PASSWORD"),
         )

@@ -1,0 +1,96 @@
+﻿{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://soterra.local/schemas/inspection-extraction.schema.json",
+  "title": "InspectionExtractionPayload",
+  "type": "object",
+  "required": ["document", "findings", "pii_entities"],
+  "properties": {
+    "document": {
+      "type": "object",
+      "required": [
+        "source_file_name",
+        "document_type",
+        "project_name",
+        "site_name",
+        "inspection_date",
+        "inspection_type",
+        "report_status",
+        "pages"
+      ],
+      "properties": {
+        "source_file_name": { "type": "string" },
+        "document_type": { "type": "string" },
+        "project_name": { "type": "string" },
+        "site_name": { "type": "string" },
+        "inspection_date": { "type": "string", "format": "date" },
+        "inspection_type": { "type": "string" },
+        "trade": { "type": "string" },
+        "inspector_name": { "type": "string" },
+        "report_status": {
+          "type": "string",
+          "enum": ["Reviewing", "Completed", "In progress"]
+        },
+        "pages": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "finding_title",
+          "finding_description",
+          "severity",
+          "status",
+          "date_identified",
+          "page_number"
+        ],
+        "properties": {
+          "finding_title": { "type": "string" },
+          "finding_description": { "type": "string" },
+          "severity": {
+            "type": "string",
+            "enum": ["Low", "Medium", "High", "Critical"]
+          },
+          "status": {
+            "type": "string",
+            "enum": ["Open", "Ready", "Closed"]
+          },
+          "date_identified": { "type": "string", "format": "date" },
+          "location_ref": { "type": "string" },
+          "trade": { "type": "string" },
+          "category": { "type": "string" },
+          "evidence_text": { "type": "string" },
+          "page_number": { "type": "integer", "minimum": 1 },
+          "bbox": {
+            "type": "object",
+            "required": ["x1", "y1", "x2", "y2"],
+            "properties": {
+              "x1": { "type": "number", "minimum": 0, "maximum": 1 },
+              "y1": { "type": "number", "minimum": 0, "maximum": 1 },
+              "x2": { "type": "number", "minimum": 0, "maximum": 1 },
+              "y2": { "type": "number", "minimum": 0, "maximum": 1 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "pii_entities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["entity_type", "text", "page_number"],
+        "properties": {
+          "entity_type": { "type": "string" },
+          "text": { "type": "string" },
+          "page_number": { "type": "integer", "minimum": 1 }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

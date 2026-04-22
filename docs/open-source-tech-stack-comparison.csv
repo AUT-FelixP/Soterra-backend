@@ -1,0 +1,6 @@
+﻿Rank,Stack,OCR,Structure_Extraction,PII_Redaction,Observed_Fit_For_Scanned_PDFs,Forecast_OCR_Score,Forecast_Metadata_Score,Forecast_Finding_Score,Forecast_Schema_Fit,Forecast_PII_Fit,Forecast_Debuggability,Weighted_Score,Recommendation
+1,"OCRmyPDF + Tesseract + pdfplumber + PyMuPDF + Presidio + Pydantic","OCRmyPDF/Tesseract","pdfplumber + PyMuPDF + rules","Presidio","Strong",8.0,8.0,7.5,8.5,9.0,9.0,8.2,"Recommended baseline"
+2,"OCRmyPDF + Tesseract + Unstructured + Presidio + Pydantic","OCRmyPDF/Tesseract","Unstructured","Presidio","Strong",8.0,8.2,7.8,8.0,9.0,7.8,8.1,"Recommended challenger"
+3,"Docling + Presidio + Pydantic","Docling internal","Docling","Presidio","Good",7.2,8.0,7.6,8.0,8.2,6.9,7.6,"Recommended structure challenger"
+4,"docTR + PyMuPDF + Presidio + Pydantic","docTR","PyMuPDF + rules","Presidio","Good",7.8,7.2,7.0,7.8,8.5,6.8,7.5,"Recommended neural OCR challenger"
+5,"PaddleOCR + LayoutParser + Presidio + Pydantic","PaddleOCR","LayoutParser + rules","Presidio","Good",7.8,7.8,7.9,7.5,8.6,5.8,7.5,"Recommended advanced layout challenger"

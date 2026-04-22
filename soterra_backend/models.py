@@ -9,6 +9,7 @@ Severity = Literal["Low", "Medium", "High", "Critical"]
 IssueStatus = Literal["Open", "Ready", "Closed"]
 ReportStatus = Literal["Reviewing", "Completed", "In progress"]
 RiskLevel = Literal["Low", "Medium", "High"]
+TenantRole = Literal["admin", "member"]
 
 
 class StrictSchemaModel(BaseModel):
@@ -53,6 +54,21 @@ class ExtractionResult(StrictSchemaModel):
 class StoredFile(StrictSchemaModel):
     storage_path: str
     download_url: str | None = None
+
+
+class TenantUser(StrictSchemaModel):
+    id: str
+    tenant_id: str
+    tenant_name: str
+    name: str
+    email: str
+    role: TenantRole
+
+
+class AuthSession(StrictSchemaModel):
+    user: TenantUser
+    access_token: str | None = None
+    expires_at: str | None = None
 
 
 class RepositorySnapshot(StrictSchemaModel):

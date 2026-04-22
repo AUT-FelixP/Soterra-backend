@@ -20,6 +20,7 @@ logger = logging.getLogger("soterra_backend")
 
 @dataclass
 class UploadContext:
+    tenant_id: str
     filename: str
     content: bytes
     content_type: str
@@ -68,7 +69,7 @@ class ReportIngestionService:
             file_hash[:12],
             self.settings.extractor_mode,
         )
-        existing_report = self.repository.get_report_by_file_hash(file_hash)
+        existing_report = self.repository.get_report_by_file_hash(upload.tenant_id, file_hash)
         if existing_report:
             logger.info("ingest_duplicate file_hash=%s report_id=%s", file_hash[:12], existing_report.get("id"))
             return IngestionOutcome(item=existing_report, is_duplicate=True), None
@@ -86,6 +87,7 @@ class ReportIngestionService:
         logger.info("file_stored report_id=%s storage_path=%s", document_id, getattr(stored_file, "storage_path", "?"))
 
         self.repository.create_placeholder_document(
+            tenant_id=upload.tenant_id,
             document_id=document_id,
             job_id=job_id,
             file_hash=file_hash,
@@ -126,6 +128,7 @@ class ReportIngestionService:
                 update={"overall_outcome": summarize_status([item.severity for item in extraction.findings])}
             )
             self.repository.complete_document(
+                tenant_id=upload.tenant_id,
                 document_id=start.document_id,
                 job_id=start.job_id,
                 source_filename=upload.filename,
@@ -142,6 +145,7 @@ class ReportIngestionService:
             )
         except Exception as exc:
             self.repository.fail_job(
+                tenant_id=upload.tenant_id,
                 document_id=start.document_id,
                 job_id=start.job_id,
                 extractor_name=extractor_name,
@@ -155,7 +159,7 @@ class ReportIngestionService:
             )
             raise
 
-        report = self.repository.get_report(start.document_id)
+        report = self.repository.get_report(upload.tenant_id, start.document_id)
         if not report:
             raise RuntimeError("The report was processed but could not be loaded back from the repository.")
         return report

@@ -1,0 +1,10 @@
+﻿Solution,OCR Engine,Extractor,PII Engine,Deployment Fit,Supports BBoxes,Schema Pass Rate,Field Accuracy,Finding Recall,Severity Accuracy,PII Recall,PII Precision,Avg Latency Seconds,Estimated Cost Per Doc,Notes,Decision
+Textract + OpenAI + Presidio,Amazon Textract,OpenAI Structured Outputs,Microsoft Presidio,Strong for current S3/jobs stack,Yes,,,,,,,,,Recommended production candidate,
+Azure DI + OpenAI + Presidio,Azure Document Intelligence,OpenAI Structured Outputs,Microsoft Presidio,Good if Azure is acceptable,Yes,,,,,,,,,Recommended challenger,
+Mistral OCR + Extractor + Presidio,Mistral OCR,LLM structured extractor,Microsoft Presidio,Good for pilot,Partial/depends on output,,,,,,,,,Benchmark challenger,
+OpenAI PDF only,OpenAI PDF file input,OpenAI Structured Outputs,Microsoft Presidio,Simple integration,Limited compared with OCR engines,,,,,,,,,Fast pilot only,
+OCRmyPDF + Tesseract + Presidio,OCRmyPDF/Tesseract,Rules plus optional LLM,Microsoft Presidio,Cheapest baseline,Limited,,,,,,,,,Open-source baseline,
+OCRmyPDF + Tesseract + pdfplumber + Presidio,OCRmyPDF/Tesseract,pdfplumber+pymupdf+rules,Microsoft Presidio,Strong free local notebook path,Partial,,,,,,,,,Recommended notebook baseline,
+OCRmyPDF + Tesseract + unstructured + Presidio,OCRmyPDF/Tesseract,Unstructured,Microsoft Presidio,Good free local notebook path,Partial,,,,,,,,,Recommended notebook challenger,
+docTR + pymupdf + Presidio,docTR,pymupdf+rules,Microsoft Presidio,Good if GPU available,Yes/partial,,,,,,,,,Model-based OCR challenger,
+Docling + Presidio,Docling,Docling,Microsoft Presidio,Promising for structure-heavy docs,Partial,,,,,,,,,Structure extraction challenger,

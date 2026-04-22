@@ -44,6 +44,7 @@ class UploadAndRoutesTest(unittest.IsolatedAsyncioTestCase):
         os.environ["SOTERRA_LOCAL_DB_PATH"] = str(cls.db_path)
         os.environ["SOTERRA_LOCAL_STORAGE_DIR"] = str(cls.storage_dir)
         os.environ["SOTERRA_PROCESS_INLINE"] = "false"
+        os.environ["SOTERRA_ENV"] = "test"
         # Use demo extraction for deterministic, fast tests. This exercises the full ingest->persist->analytics flow
         # without requiring OCR model downloads.
         os.environ["SOTERRA_EXTRACTOR_MODE"] = "demo"
@@ -57,6 +58,7 @@ class UploadAndRoutesTest(unittest.IsolatedAsyncioTestCase):
         cls.fixture_bytes = cls.fixture_pdf.read_bytes()
         cls.fixture_hash = hashlib.sha256(cls.fixture_bytes).hexdigest()
         cls.expected_file_tag = f"file-{cls.fixture_hash[:12]}"
+        cls.auth_headers: dict[str, str] | None = None
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -73,6 +75,7 @@ class UploadAndRoutesTest(unittest.IsolatedAsyncioTestCase):
         await self.client.aclose()
 
     async def _upload_once(self) -> tuple[int, dict]:
+        await self._ensure_auth()
         response = await self.client.post(
             "/reports",
             data={
@@ -83,9 +86,27 @@ class UploadAndRoutesTest(unittest.IsolatedAsyncioTestCase):
                 "trade": "General",
             },
             files={"file": (self.fixture_pdf.name, self.fixture_bytes, "application/pdf")},
+            headers=self.auth_headers,
         )
         payload = response.json()
         return response.status_code, payload
+
+    async def _ensure_auth(self) -> None:
+        if self.__class__.auth_headers:
+            return
+        response = await self.client.post(
+            "/auth/register",
+            json={
+                "tenantName": "Route Test Tenant",
+                "name": "Route Test Admin",
+                "email": "route-test@example.com",
+                "password": "VeryStrongPassword123!",
+            },
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        token = response.json().get("access_token")
+        self.assertTrue(token)
+        self.__class__.auth_headers = {"Authorization": f"Bearer {token}"}
 
     async def _wait_for_report_issues(self, report_id: str, timeout_seconds: int = 30) -> dict:
         import asyncio
@@ -93,7 +114,7 @@ class UploadAndRoutesTest(unittest.IsolatedAsyncioTestCase):
 
         started = time.monotonic()
         while True:
-            detail_response = await self.client.get(f"/reports/{report_id}")
+            detail_response = await self.client.get(f"/reports/{report_id}", headers=self.auth_headers)
             payload = detail_response.json()
             issues = payload.get("item", {}).get("issues", [])
             if issues:
@@ -152,7 +173,7 @@ class UploadAndRoutesTest(unittest.IsolatedAsyncioTestCase):
             connection.close()
 
         # Validate the main read routes return data for the newly uploaded report.
-        reports = (await self.client.get("/reports")).json()
+        reports = (await self.client.get("/reports", headers=self.auth_headers)).json()
         items = reports.get("items") if isinstance(reports, dict) else reports
         self.assertTrue(any(item.get("id") == report_id for item in (items or [])))
 
@@ -160,47 +181,47 @@ class UploadAndRoutesTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(detail["item"]["id"], report_id)
         self.assertGreaterEqual(len(detail["item"].get("issues") or []), 1)
 
-        issues = (await self.client.get("/issues")).json()
+        issues = (await self.client.get("/issues", headers=self.auth_headers)).json()
         issue_items = issues.get("items") if isinstance(issues, dict) else issues
         self.assertTrue(issue_items)
         issue_id = issue_items[0]["id"]
 
-        issue_detail = (await self.client.get(f"/issues/{issue_id}")).json()
+        issue_detail = (await self.client.get(f"/issues/{issue_id}", headers=self.auth_headers)).json()
         self.assertEqual(issue_detail["item"]["id"], issue_id)
 
         # Patch issue through both routes (issues + tracker) to ensure writes succeed.
         patched = (
             await self.client.patch(
-            f"/issues/{issue_id}", json={"status": "Ready", "reinspections": 2, "lastSentTo": "qa@example.com"}
+            f"/issues/{issue_id}", json={"status": "Ready", "reinspections": 2, "lastSentTo": "qa@example.com"}, headers=self.auth_headers
             )
         ).json()
         self.assertEqual(patched["item"]["status"], "Ready")
 
-        patched_tracker = (await self.client.patch(f"/tracker/{issue_id}", json={"status": "Closed", "reinspections": 3})).json()
+        patched_tracker = (await self.client.patch(f"/tracker/{issue_id}", json={"status": "Closed", "reinspections": 3}, headers=self.auth_headers)).json()
         self.assertEqual(patched_tracker["item"]["status"], "Closed")
 
         # Exercise the analytics endpoints that feed the frontend.
-        self.assertEqual((await self.client.get("/dashboard")).status_code, 200)
-        self.assertEqual((await self.client.get("/dashboard/company")).status_code, 200)
-        self.assertEqual((await self.client.get("/dashboard/performance")).status_code, 200)
-        self.assertEqual((await self.client.get("/dashboard/insights")).status_code, 200)
-        self.assertEqual((await self.client.get("/dashboard/live-tracker")).status_code, 200)
-        self.assertEqual((await self.client.get("/dashboard/top-failures")).status_code, 200)
-        self.assertEqual((await self.client.get("/dashboard/upcoming-risk")).status_code, 200)
-        self.assertEqual((await self.client.get("/dashboard/insights-preview")).status_code, 200)
-        self.assertEqual((await self.client.get("/inspection-risk")).status_code, 200)
+        self.assertEqual((await self.client.get("/dashboard", headers=self.auth_headers)).status_code, 200)
+        self.assertEqual((await self.client.get("/dashboard/company", headers=self.auth_headers)).status_code, 200)
+        self.assertEqual((await self.client.get("/dashboard/performance", headers=self.auth_headers)).status_code, 200)
+        self.assertEqual((await self.client.get("/dashboard/insights", headers=self.auth_headers)).status_code, 200)
+        self.assertEqual((await self.client.get("/dashboard/live-tracker", headers=self.auth_headers)).status_code, 200)
+        self.assertEqual((await self.client.get("/dashboard/top-failures", headers=self.auth_headers)).status_code, 200)
+        self.assertEqual((await self.client.get("/dashboard/upcoming-risk", headers=self.auth_headers)).status_code, 200)
+        self.assertEqual((await self.client.get("/dashboard/insights-preview", headers=self.auth_headers)).status_code, 200)
+        self.assertEqual((await self.client.get("/inspection-risk", headers=self.auth_headers)).status_code, 200)
 
-        tracker = (await self.client.get("/tracker")).json()
+        tracker = (await self.client.get("/tracker", headers=self.auth_headers)).json()
         tracker_items = (tracker or {}).get("issueRegister", {}).get("items", [])
         self.assertTrue(tracker_items)
-        self.assertEqual((await self.client.get(f"/tracker/{issue_id}")).status_code, 200)
+        self.assertEqual((await self.client.get(f"/tracker/{issue_id}", headers=self.auth_headers)).status_code, 200)
 
         # Project dashboards use slug. Slug comes from project name (lowercased, spaces -> dashes).
-        self.assertEqual((await self.client.get("/dashboard/project/kauri-apartments")).status_code, 200)
+        self.assertEqual((await self.client.get("/dashboard/project/kauri-apartments", headers=self.auth_headers)).status_code, 200)
 
     async def test_model_extraction_disabled(self) -> None:
         health = (await self.client.get("/health")).json()
-        self.assertIs(health.get("modelExtractionEnabled"), False)
+        self.assertEqual(health, {"status": "ok"})
 
         # The backend should refuse to instantiate a model extractor when the flag is disabled.
         from soterra_backend.config import Settings

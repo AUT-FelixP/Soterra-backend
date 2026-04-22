@@ -1,6 +1,37 @@
+create table if not exists public.tenants (
+  id text primary key,
+  name text not null,
+  slug text not null unique,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.users (
+  id text primary key,
+  tenant_id text not null references public.tenants(id) on delete cascade,
+  name text not null,
+  email text not null unique,
+  password_hash text not null,
+  role text not null check (role in ('admin', 'member')),
+  created_at timestamptz not null default now()
+);
+
+create unique index if not exists idx_users_email_lower_unique
+  on public.users (lower(email));
+
+create table if not exists public.auth_sessions (
+  id text primary key,
+  user_id text not null references public.users(id) on delete cascade,
+  tenant_id text not null references public.tenants(id) on delete cascade,
+  token_hash text not null unique,
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null,
+  revoked_at timestamptz
+);
+
 create table if not exists public.projects (
   id text primary key,
-  slug text not null unique,
+  tenant_id text not null references public.tenants(id) on delete cascade,
+  slug text not null,
   name text not null,
   site_name text not null,
   address text,
@@ -12,9 +43,10 @@ comment on table public.projects is
 
 create table if not exists public.documents (
   id text primary key,
+  tenant_id text not null references public.tenants(id) on delete cascade,
   project_id text not null references public.projects(id) on delete cascade,
-  file_hash text not null unique,
-  file_tag text not null unique,
+  file_hash text not null,
+  file_tag text not null,
   source_filename text not null,
   storage_path text not null,
   download_url text,
@@ -48,6 +80,7 @@ comment on table public.jobs is
 
 create table if not exists public.findings (
   id text primary key,
+  tenant_id text not null references public.tenants(id) on delete cascade,
   document_id text not null references public.documents(id) on delete cascade,
   project_id text not null references public.projects(id) on delete cascade,
   title text not null,
@@ -70,6 +103,7 @@ comment on table public.findings is
 
 create table if not exists public.predicted_inspections (
   id text primary key,
+  tenant_id text not null references public.tenants(id) on delete cascade,
   project_id text not null references public.projects(id) on delete cascade,
   inspection_type text not null,
   site_name text not null,
@@ -83,22 +117,94 @@ comment on table public.predicted_inspections is
 'Forward-looking inspection prompts generated from extracted defects. The risk pages read from this table.';
 
 create index if not exists idx_documents_project_date
-  on public.documents (project_id, report_date desc);
+  on public.documents (tenant_id, project_id, report_date desc);
+
+create index if not exists idx_auth_sessions_token_hash
+  on public.auth_sessions (token_hash);
+
+create index if not exists idx_auth_sessions_user_tenant
+  on public.auth_sessions (user_id, tenant_id);
 
 create index if not exists idx_documents_file_hash
-  on public.documents (file_hash);
+  on public.documents (tenant_id, file_hash);
+
+create unique index if not exists idx_projects_tenant_slug_unique
+  on public.projects (tenant_id, slug);
+
+create unique index if not exists idx_documents_tenant_file_hash_unique
+  on public.documents (tenant_id, file_hash);
+
+create unique index if not exists idx_documents_tenant_file_tag_unique
+  on public.documents (tenant_id, file_tag);
 
 create index if not exists idx_findings_document
   on public.findings (document_id);
 
 create index if not exists idx_findings_project_status
-  on public.findings (project_id, status);
+  on public.findings (tenant_id, project_id, status);
 
 create index if not exists idx_findings_trade_severity
   on public.findings (trade, severity);
 
 create index if not exists idx_predicted_inspections_date
-  on public.predicted_inspections (expected_date);
+  on public.predicted_inspections (tenant_id, expected_date);
+
+alter table public.tenants enable row level security;
+alter table public.users enable row level security;
+alter table public.auth_sessions enable row level security;
+alter table public.projects enable row level security;
+alter table public.documents enable row level security;
+alter table public.jobs enable row level security;
+alter table public.findings enable row level security;
+alter table public.predicted_inspections enable row level security;
+
+drop policy if exists tenant_isolation_tenants on public.tenants;
+create policy tenant_isolation_tenants
+  on public.tenants for all to authenticated
+  using (id = (auth.jwt() ->> 'tenant_id'))
+  with check (id = (auth.jwt() ->> 'tenant_id'));
+
+drop policy if exists tenant_isolation_users on public.users;
+create policy tenant_isolation_users
+  on public.users for all to authenticated
+  using (tenant_id = (auth.jwt() ->> 'tenant_id'))
+  with check (tenant_id = (auth.jwt() ->> 'tenant_id'));
+
+drop policy if exists tenant_isolation_projects on public.projects;
+create policy tenant_isolation_projects
+  on public.projects for all to authenticated
+  using (tenant_id = (auth.jwt() ->> 'tenant_id'))
+  with check (tenant_id = (auth.jwt() ->> 'tenant_id'));
+
+drop policy if exists tenant_isolation_documents on public.documents;
+create policy tenant_isolation_documents
+  on public.documents for all to authenticated
+  using (tenant_id = (auth.jwt() ->> 'tenant_id'))
+  with check (tenant_id = (auth.jwt() ->> 'tenant_id'));
+
+drop policy if exists tenant_isolation_jobs on public.jobs;
+create policy tenant_isolation_jobs
+  on public.jobs for all to authenticated
+  using (exists (
+    select 1 from public.documents d
+    where d.id = jobs.document_id and d.tenant_id = (auth.jwt() ->> 'tenant_id')
+  ))
+  with check (exists (
+    select 1 from public.documents d
+    where d.id = jobs.document_id and d.tenant_id = (auth.jwt() ->> 'tenant_id')
+  ));
+
+drop policy if exists tenant_isolation_findings on public.findings;
+create policy tenant_isolation_findings
+  on public.findings for all to authenticated
+  using (tenant_id = (auth.jwt() ->> 'tenant_id'))
+  with check (tenant_id = (auth.jwt() ->> 'tenant_id'));
+
+drop policy if exists tenant_isolation_predicted_inspections on public.predicted_inspections;
+create policy tenant_isolation_predicted_inspections
+  on public.predicted_inspections for all to authenticated
+  using (tenant_id = (auth.jwt() ->> 'tenant_id'))
+  with check (tenant_id = (auth.jwt() ->> 'tenant_id'));
 
 create or replace view public.analytics_report_summary_v as
 select

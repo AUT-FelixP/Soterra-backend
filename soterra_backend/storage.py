@@ -13,6 +13,9 @@ class StorageBackend(Protocol):
     def store(self, *, document_id: str, filename: str, content: bytes, content_type: str) -> StoredFile:
         ...
 
+    def delete(self, *, storage_path: str) -> None:
+        ...
+
 
 class LocalFileStorage:
     def __init__(self, root_dir: Path) -> None:
@@ -21,11 +24,29 @@ class LocalFileStorage:
 
     def store(self, *, document_id: str, filename: str, content: bytes, content_type: str) -> StoredFile:
         _ = content_type
-        destination = self.root_dir / document_id / filename
-        destination.parent.mkdir(parents=True, exist_ok=True)
+        safe_name = _safe_storage_filename(filename)
+        document_dir = (self.root_dir / document_id).resolve()
+        destination = (document_dir / safe_name).resolve()
+        if document_dir not in destination.parents:
+            raise RuntimeError("Resolved upload path escaped the storage directory.")
+        document_dir.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(content)
-        resolved = str(destination.resolve())
+        resolved = str(destination)
         return StoredFile(storage_path=resolved, download_url=resolved)
+
+    def delete(self, *, storage_path: str) -> None:
+        root = self.root_dir.resolve()
+        target = Path(storage_path).resolve()
+        if root != target and root not in target.parents:
+            return
+        if target.exists() and target.is_file():
+            target.unlink()
+        parent = target.parent
+        if parent.exists() and parent.is_dir() and parent.name.startswith("rpt-"):
+            try:
+                parent.rmdir()
+            except OSError:
+                return
 
 
 class SupabaseFileStorage:
@@ -66,6 +87,9 @@ class SupabaseFileStorage:
         if isinstance(signed, dict):
             signed_url = signed.get("signedURL") or signed.get("signedUrl")
         return StoredFile(storage_path=path, download_url=signed_url)
+
+    def delete(self, *, storage_path: str) -> None:
+        self.client.storage.from_(self.bucket).remove([storage_path])
 
 
 def build_storage(settings: Settings) -> StorageBackend:

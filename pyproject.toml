@@ -9,6 +9,7 @@ description = "Python backend package for Soterra inspection extraction and anal
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+  "argon2-cffi>=25,<26",
   "fastapi>=0.116,<1",
   "httpx>=0.28,<1",
   "openai>=2.0.0,<3",
