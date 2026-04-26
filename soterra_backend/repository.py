@@ -184,23 +184,13 @@ class SqliteRepository:
         with self._connect() as connection:
             if connection.execute("SELECT id FROM users WHERE email = ?", (normalized_email,)).fetchone():
                 raise ValueError("An account with this email already exists.")
-            existing_tenant = None
-            if email_domain and not _is_public_email_domain(email_domain):
-                existing_tenant = connection.execute(
-                    "SELECT id, name FROM tenants WHERE email_domain = ? LIMIT 1",
-                    (email_domain,),
-                ).fetchone()
-            if existing_tenant:
-                tenant_id = existing_tenant["id"]
-                role = "member"
-            else:
-                role = "admin"
-                if connection.execute("SELECT id FROM tenants WHERE slug = ?", (tenant_slug,)).fetchone():
-                    tenant_slug = f"{tenant_slug}-{tenant_id[-6:]}"
-                connection.execute(
-                    "INSERT INTO tenants (id, name, slug, email_domain, created_at) VALUES (?, ?, ?, ?, ?)",
-                    (tenant_id, tenant_name, tenant_slug, email_domain, timestamp),
-                )
+            role = "admin"
+            if connection.execute("SELECT id FROM tenants WHERE slug = ?", (tenant_slug,)).fetchone():
+                tenant_slug = f"{tenant_slug}-{tenant_id[-6:]}"
+            connection.execute(
+                "INSERT INTO tenants (id, name, slug, email_domain, created_at) VALUES (?, ?, ?, ?, ?)",
+                (tenant_id, tenant_name, tenant_slug, email_domain, timestamp),
+            )
             connection.execute(
                 """
                 INSERT INTO users (id, tenant_id, name, email, password_hash, role, created_at)
@@ -1045,28 +1035,17 @@ class SupabaseRepository:
         existing = self.client.table("users").select("id").eq("email", normalized_email).limit(1).execute().data
         if existing:
             raise ValueError("An account with this email already exists.")
-        existing_tenant = []
-        if email_domain and not _is_public_email_domain(email_domain):
-            try:
-                existing_tenant = self.client.table("tenants").select("id, name").eq("email_domain", email_domain).limit(1).execute().data
-            except Exception as exc:
-                if not _is_postgrest_missing_column(exc, "email_domain"):
-                    raise
-        if existing_tenant:
-            tenant_id = existing_tenant[0]["id"]
-            role = "member"
-        else:
-            role = "admin"
-            if self.client.table("tenants").select("id").eq("slug", tenant_slug).limit(1).execute().data:
-                tenant_slug = f"{tenant_slug}-{tenant_id[-6:]}"
-            tenant_payload = {"id": tenant_id, "name": tenant_name, "slug": tenant_slug, "email_domain": email_domain, "created_at": timestamp}
-            try:
-                self.client.table("tenants").insert(tenant_payload).execute()
-            except Exception as exc:
-                if not _is_postgrest_missing_column(exc, "email_domain"):
-                    raise
-                tenant_payload.pop("email_domain", None)
-                self.client.table("tenants").insert(tenant_payload).execute()
+        role = "admin"
+        if self.client.table("tenants").select("id").eq("slug", tenant_slug).limit(1).execute().data:
+            tenant_slug = f"{tenant_slug}-{tenant_id[-6:]}"
+        tenant_payload = {"id": tenant_id, "name": tenant_name, "slug": tenant_slug, "email_domain": email_domain, "created_at": timestamp}
+        try:
+            self.client.table("tenants").insert(tenant_payload).execute()
+        except Exception as exc:
+            if not _is_postgrest_missing_column(exc, "email_domain"):
+                raise
+            tenant_payload.pop("email_domain", None)
+            self.client.table("tenants").insert(tenant_payload).execute()
         self.client.table("users").insert(
             {
                 "id": user_id,

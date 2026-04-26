@@ -159,12 +159,14 @@ def create_app() -> FastAPI:
             session = repository.register_tenant(tenant_name=tenant_name, name=payload.name.strip(), email=payload.email.strip(), password=payload.password)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        email_service.send_registration_email(
+        email_sent = email_service.send_registration_email(
             to_email=session.user.email,
             name=session.user.name,
             tenant_name=session.user.tenant_name,
         )
-        return session.model_dump()
+        response = session.model_dump()
+        response["emailSent"] = email_sent
+        return response
 
     @app.post("/auth/login")
     def login(request: Request, payload: LoginRequest) -> dict:
@@ -235,12 +237,12 @@ def create_app() -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         actor_session = repository.get_user_session(user_id=actor_user_id, tenant_id=tenant_id)
-        email_service.send_invitation_email(
+        email_sent = email_service.send_invitation_email(
             to_email=member["email"],
             name=member["name"],
             tenant_name=actor_session.user.tenant_name if actor_session else "your tenant",
         )
-        return {"item": member}
+        return {"item": member, "emailSent": email_sent}
 
     @app.delete("/tenants/members/{user_id}")
     def remove_member(

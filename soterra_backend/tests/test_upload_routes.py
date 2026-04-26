@@ -6,6 +6,7 @@ import os
 import sqlite3
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import httpx
 
@@ -232,7 +233,7 @@ class UploadAndRoutesTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RuntimeError):
             _ = build_extractor(settings)
 
-    async def test_password_reset_and_domain_linking(self) -> None:
+    async def test_password_reset_and_tenant_segregation(self) -> None:
         first = await self.client.post(
             "/auth/register",
             json={
@@ -244,6 +245,7 @@ class UploadAndRoutesTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(first.status_code, 201, first.text)
         first_payload = first.json()
+        self.assertFalse(first_payload["emailSent"])
 
         second = await self.client.post(
             "/auth/register",
@@ -256,20 +258,15 @@ class UploadAndRoutesTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(second.status_code, 201, second.text)
         second_payload = second.json()
-        self.assertEqual(second_payload["user"]["tenant_id"], first_payload["user"]["tenant_id"])
-        self.assertEqual(second_payload["user"]["role"], "member")
+        self.assertNotEqual(second_payload["user"]["tenant_id"], first_payload["user"]["tenant_id"])
+        self.assertEqual(second_payload["user"]["role"], "admin")
 
-        unrelated = await self.client.post(
-            "/auth/register",
-            json={
-                "tenantName": "Unrelated Tenant",
-                "name": "Unrelated Admin",
-                "email": "admin@unrelated-domain.test",
-                "password": "VeryStrongPassword123!",
-            },
+        existing_login = await self.client.post(
+            "/auth/login",
+            json={"email": "admin@domain-link.test", "password": "VeryStrongPassword123!"},
         )
-        self.assertEqual(unrelated.status_code, 201, unrelated.text)
-        self.assertNotEqual(unrelated.json()["user"]["tenant_id"], first_payload["user"]["tenant_id"])
+        self.assertEqual(existing_login.status_code, 200, existing_login.text)
+        self.assertEqual(existing_login.json()["user"]["tenant_id"], first_payload["user"]["tenant_id"])
 
         forgot = await self.client.post("/auth/forgot-password", json={"email": "member@domain-link.test"})
         self.assertEqual(forgot.status_code, 200, forgot.text)
@@ -294,3 +291,67 @@ class UploadAndRoutesTest(unittest.IsolatedAsyncioTestCase):
             json={"email": "member@domain-link.test", "password": "NewStrongPassword123!"},
         )
         self.assertEqual(new_login.status_code, 200, new_login.text)
+        self.assertEqual(new_login.json()["user"]["tenant_id"], second_payload["user"]["tenant_id"])
+
+
+class EmailServiceTest(unittest.TestCase):
+    def test_registration_email_is_branded_multipart_message(self) -> None:
+        from soterra_backend.config import Settings
+        from soterra_backend.email_service import EmailService
+
+        sent_messages = []
+
+        class FakeSMTP:
+            def __init__(self, host: str, port: int, timeout: int) -> None:
+                self.host = host
+                self.port = port
+                self.timeout = timeout
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> None:
+                return None
+
+            def starttls(self) -> None:
+                return None
+
+            def login(self, username: str, password: str) -> None:
+                return None
+
+            def send_message(self, message) -> None:
+                sent_messages.append(message)
+
+        settings = replace(
+            Settings.from_env(),
+            smtp_host="smtp.example.test",
+            smtp_port=587,
+            smtp_username="smtp-user",
+            smtp_password="smtp-password",
+            smtp_from_email="hello@soterra.nz",
+            smtp_from_name="Soterra",
+            smtp_use_tls=True,
+            app_base_url="https://app.soterra.nz",
+        )
+
+        with patch("soterra_backend.email_service.smtplib.SMTP", FakeSMTP):
+            sent = EmailService(settings).send_registration_email(
+                to_email="new.user@example.com",
+                name="New User",
+                tenant_name="Example Client",
+            )
+
+        self.assertTrue(sent)
+        self.assertEqual(len(sent_messages), 1)
+        message = sent_messages[0]
+        self.assertEqual(message["From"], "Soterra <hello@soterra.nz>")
+        self.assertEqual(message["To"], "new.user@example.com")
+        self.assertEqual(message["Subject"], "Welcome to Soterra")
+        self.assertTrue(message.is_multipart())
+        plain = message.get_body(preferencelist=("plain",))
+        html = message.get_body(preferencelist=("html",))
+        self.assertIsNotNone(plain)
+        self.assertIsNotNone(html)
+        self.assertIn("Your Soterra account for Example Client is ready.", plain.get_content())
+        self.assertIn("Inspection intelligence for safer buildings", html.get_content())
+        self.assertIn("https://app.soterra.nz/auth/sign-in", html.get_content())
