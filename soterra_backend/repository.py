@@ -1354,26 +1354,29 @@ class SupabaseRepository:
         raw_payload: dict,
     ) -> None:
         timestamp = utc_now_iso()
-        project = (
-            self.client.table("projects")
-            .upsert(
-                {
-                    "id": create_id("prj"),
-                    "tenant_id": tenant_id,
-                    "slug": _slug(extraction.project_name),
-                    "name": extraction.project_name,
-                    "site_name": extraction.site_name,
-                    "address": extraction.address,
-                    "created_at": timestamp,
-                },
-                on_conflict="tenant_id,slug",
-            )
+        document_row = (
+            self.client.table("documents")
+            .select("project_id")
+            .eq("tenant_id", tenant_id)
+            .eq("id", document_id)
+            .limit(1)
             .execute()
-            .data[0]
+            .data
         )
+        if not document_row:
+            raise RuntimeError(f"Document {document_id} could not be loaded for completion.")
+
+        project_id = document_row[0]["project_id"]
+        self.client.table("projects").update(
+            {
+                "name": extraction.project_name,
+                "site_name": extraction.site_name,
+                "address": extraction.address,
+            }
+        ).eq("tenant_id", tenant_id).eq("id", project_id).execute()
 
         document_payload = {
-            "project_id": project["id"],
+            "project_id": project_id,
             "source_filename": source_filename,
             "storage_path": stored_file.storage_path,
             "download_url": stored_file.download_url,
@@ -1406,7 +1409,7 @@ class SupabaseRepository:
                     "id": create_id("issue"),
                     "tenant_id": tenant_id,
                     "document_id": document_id,
-                    "project_id": project["id"],
+                    "project_id": project_id,
                     "title": finding.title,
                     "description": finding.description,
                     "category": finding.category,
@@ -1429,7 +1432,7 @@ class SupabaseRepository:
             {
                 "id": create_id("pred"),
                 "tenant_id": tenant_id,
-                "project_id": project["id"],
+                "project_id": project_id,
                 "inspection_type": prediction.inspection_type,
                 "site_name": prediction.site_name,
                 "expected_date": prediction.expected_date,
