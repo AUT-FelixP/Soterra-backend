@@ -49,6 +49,7 @@ class UploadAndRoutesTest(unittest.IsolatedAsyncioTestCase):
         # without requiring OCR model downloads.
         os.environ["SOTERRA_EXTRACTOR_MODE"] = "demo"
         os.environ["SOTERRA_ALLOW_MODEL_EXTRACTION"] = "false"
+        os.environ["SOTERRA_SMTP_HOST"] = ""
 
         from soterra_backend.api import create_app
 
@@ -57,7 +58,7 @@ class UploadAndRoutesTest(unittest.IsolatedAsyncioTestCase):
         cls.fixture_pdf = _find_fixture_pdf()
         cls.fixture_bytes = cls.fixture_pdf.read_bytes()
         cls.fixture_hash = hashlib.sha256(cls.fixture_bytes).hexdigest()
-        cls.expected_file_tag = f"file-{cls.fixture_hash[:12]}"
+        cls.expected_file_tag_suffix = f"file-{cls.fixture_hash[:12]}"
         cls.auth_headers: dict[str, str] | None = None
 
     @classmethod
@@ -154,10 +155,10 @@ class UploadAndRoutesTest(unittest.IsolatedAsyncioTestCase):
             self.assertGreater(findings, 0)
 
             document = connection.execute(
-                "SELECT file_hash, file_tag, source_filename FROM documents LIMIT 1"
+                "SELECT tenant_id, file_hash, file_tag, source_filename FROM documents LIMIT 1"
             ).fetchone()
             self.assertEqual(document["file_hash"], self.fixture_hash)
-            self.assertEqual(document["file_tag"], self.expected_file_tag)
+            self.assertEqual(document["file_tag"], f"{document['tenant_id']}-{self.expected_file_tag_suffix}")
             self.assertEqual(document["source_filename"], self.fixture_pdf.name)
 
             # The analytics views should reflect the extracted findings without a manual refresh.
@@ -230,3 +231,66 @@ class UploadAndRoutesTest(unittest.IsolatedAsyncioTestCase):
         settings = replace(Settings.from_env(), extractor_mode="openai", allow_model_extraction=False)
         with self.assertRaises(RuntimeError):
             _ = build_extractor(settings)
+
+    async def test_password_reset_and_domain_linking(self) -> None:
+        first = await self.client.post(
+            "/auth/register",
+            json={
+                "tenantName": "Domain Link Tenant",
+                "name": "Domain Admin",
+                "email": "admin@domain-link.test",
+                "password": "VeryStrongPassword123!",
+            },
+        )
+        self.assertEqual(first.status_code, 201, first.text)
+        first_payload = first.json()
+
+        second = await self.client.post(
+            "/auth/register",
+            json={
+                "tenantName": "Another Domain Link Tenant",
+                "name": "Domain Member",
+                "email": "member@domain-link.test",
+                "password": "VeryStrongPassword123!",
+            },
+        )
+        self.assertEqual(second.status_code, 201, second.text)
+        second_payload = second.json()
+        self.assertEqual(second_payload["user"]["tenant_id"], first_payload["user"]["tenant_id"])
+        self.assertEqual(second_payload["user"]["role"], "member")
+
+        unrelated = await self.client.post(
+            "/auth/register",
+            json={
+                "tenantName": "Unrelated Tenant",
+                "name": "Unrelated Admin",
+                "email": "admin@unrelated-domain.test",
+                "password": "VeryStrongPassword123!",
+            },
+        )
+        self.assertEqual(unrelated.status_code, 201, unrelated.text)
+        self.assertNotEqual(unrelated.json()["user"]["tenant_id"], first_payload["user"]["tenant_id"])
+
+        forgot = await self.client.post("/auth/forgot-password", json={"email": "member@domain-link.test"})
+        self.assertEqual(forgot.status_code, 200, forgot.text)
+        reset_token = forgot.json().get("resetToken")
+        self.assertTrue(reset_token)
+
+        reset = await self.client.post(
+            "/auth/reset-password",
+            json={"token": reset_token, "password": "NewStrongPassword123!"},
+        )
+        self.assertEqual(reset.status_code, 200, reset.text)
+        self.assertEqual(reset.json()["user"]["email"], "member@domain-link.test")
+
+        old_login = await self.client.post(
+            "/auth/login",
+            json={"email": "member@domain-link.test", "password": "VeryStrongPassword123!"},
+        )
+        self.assertEqual(old_login.status_code, 401, old_login.text)
+
+        new_login = await self.client.post(
+            "/auth/login",
+            json={"email": "member@domain-link.test", "password": "NewStrongPassword123!"},
+        )
+        self.assertEqual(new_login.status_code, 200, new_login.text)

@@ -28,6 +28,7 @@ from .analytics import (
     build_tracker_page,
 )
 from .config import Settings
+from .email_service import EmailService
 from .repository import build_repository
 from .service import ReportIngestionService, UploadContext
 from .storage import build_storage
@@ -54,6 +55,15 @@ class LoginRequest(StrictRequestModel):
     email: str | None = Field(default=None, min_length=3, max_length=254)
     username: str | None = Field(default=None, min_length=3, max_length=254)
     password: str = Field(min_length=1, max_length=256)
+
+
+class ForgotPasswordRequest(StrictRequestModel):
+    email: str = Field(min_length=3, max_length=254)
+
+
+class ResetPasswordRequest(StrictRequestModel):
+    token: str = Field(min_length=16, max_length=512)
+    password: str = Field(min_length=12, max_length=256)
 
 
 class InviteMemberRequest(StrictRequestModel):
@@ -94,6 +104,7 @@ def create_app() -> FastAPI:
     repository = build_repository(settings)
     repository.initialize()
     storage = build_storage(settings)
+    email_service = EmailService(settings)
     ingestion_service = ReportIngestionService(
         settings=settings,
         repository=repository,
@@ -114,6 +125,8 @@ def create_app() -> FastAPI:
             "/health",
             "/auth/login",
             "/auth/register",
+            "/auth/forgot-password",
+            "/auth/reset-password",
         }
         if settings.enable_docs:
             public_paths.update({"/docs", "/redoc", "/openapi.json"})
@@ -146,6 +159,11 @@ def create_app() -> FastAPI:
             session = repository.register_tenant(tenant_name=tenant_name, name=payload.name.strip(), email=payload.email.strip(), password=payload.password)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        email_service.send_registration_email(
+            to_email=session.user.email,
+            name=session.user.name,
+            tenant_name=session.user.tenant_name,
+        )
         return session.model_dump()
 
     @app.post("/auth/login")
@@ -158,6 +176,34 @@ def create_app() -> FastAPI:
         session = repository.authenticate_user(email=email, password=password)
         if not session:
             raise HTTPException(status_code=401, detail="Invalid credentials.")
+        return session.model_dump()
+
+    @app.post("/auth/forgot-password")
+    def forgot_password(request: Request, payload: ForgotPasswordRequest) -> dict:
+        email = payload.email.strip()
+        _check_rate_limit(request, "forgot-password", email.lower(), limit=5, window_seconds=15 * 60)
+        reset = repository.create_password_reset_token(email=email)
+        response: dict = {
+            "message": "If an account exists for this email, a password reset link has been sent.",
+            "emailSent": False,
+        }
+        if reset:
+            email_sent = email_service.send_password_reset_email(
+                to_email=reset["email"],
+                name=reset["name"],
+                token=reset["token"],
+            )
+            response["emailSent"] = email_sent
+            if settings.app_env != "production" and not email_sent:
+                response["resetToken"] = reset["token"]
+        return response
+
+    @app.post("/auth/reset-password")
+    def reset_password(request: Request, payload: ResetPasswordRequest) -> dict:
+        _check_rate_limit(request, "reset-password", payload.token[:16], limit=8, window_seconds=15 * 60)
+        session = repository.reset_password(token=payload.token.strip(), password=payload.password)
+        if not session:
+            raise HTTPException(status_code=400, detail="Invalid or expired password reset token.")
         return session.model_dump()
 
     @app.get("/auth/session")
@@ -183,11 +229,18 @@ def create_app() -> FastAPI:
     ) -> dict:
         _check_rate_limit(request, "invite", tenant_id, limit=30, window_seconds=60 * 60)
         try:
-            return {"item": repository.invite_member(tenant_id=tenant_id, actor_user_id=actor_user_id, name=payload.name.strip(), email=payload.email.strip(), password=payload.password)}
+            member = repository.invite_member(tenant_id=tenant_id, actor_user_id=actor_user_id, name=payload.name.strip(), email=payload.email.strip(), password=payload.password)
         except PermissionError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        actor_session = repository.get_user_session(user_id=actor_user_id, tenant_id=tenant_id)
+        email_service.send_invitation_email(
+            to_email=member["email"],
+            name=member["name"],
+            tenant_name=actor_session.user.tenant_name if actor_session else "your tenant",
+        )
+        return {"item": member}
 
     @app.delete("/tenants/members/{user_id}")
     def remove_member(

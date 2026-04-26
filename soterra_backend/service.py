@@ -76,7 +76,7 @@ class ReportIngestionService:
 
         document_id = create_id("rpt")
         job_id = create_id("job")
-        file_tag = f"file-{file_hash[:12]}"
+        file_tag = f"{upload.tenant_id}-file-{file_hash[:12]}"
 
         stored_file = self.storage.store(
             document_id=document_id,

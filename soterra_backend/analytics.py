@@ -62,13 +62,7 @@ def build_dashboard_overview(snapshot: RepositorySnapshot) -> dict:
     open_findings = [item for item in findings if item["status"] == "Open"]
     ready_findings = [item for item in findings if item["status"] == "Ready"]
     closed_findings = [item for item in findings if item["status"] == "Closed"]
-    units_captured = sorted(
-        {
-            unit
-            for document in reports
-            for unit in _document_units_from_findings(document["id"], findings)
-        }
-    )
+    units_captured = sorted({unit for document in reports for unit in _document_units(document, findings)})
 
     return {
         "title": "Dashboard",
@@ -400,7 +394,7 @@ def build_tracker_page(snapshot: RepositorySnapshot, filters: dict[str, str | No
     site_documents = [item for item in snapshot.documents if item["site_name"] == selected_site]
     site_units: list[str] = []
     for document in site_documents:
-        for unit in _document_units_from_findings(document["id"], snapshot.findings):
+        for unit in _document_units(document, snapshot.findings):
             if unit not in site_units:
                 site_units.append(unit)
 
@@ -415,7 +409,7 @@ def build_tracker_page(snapshot: RepositorySnapshot, filters: dict[str, str | No
                 "reportDate": document["report_date"],
                 "status": document["status"],
                 "issueCount": len(document_findings),
-                "unitCount": len(_document_units_from_findings(document["id"], snapshot.findings)),
+                "unitCount": len(_document_units(document, snapshot.findings)),
             }
         )
 
@@ -499,15 +493,17 @@ def build_dashboard_live_tracker(snapshot: RepositorySnapshot) -> dict:
 
 
 def build_dashboard_top_failures(snapshot: RepositorySnapshot, inspection_type: str | None = None) -> dict:
-    findings = _filter_findings_by_type(snapshot.findings, inspection_type or "All types")
-    drivers = _top_failure_driver_rows(findings, limit=6)
     selected_type = inspection_type or (snapshot.findings[0]["inspection_type"] if snapshot.findings else "General")
+    findings = _filter_findings_by_type(snapshot.findings, selected_type)
+    report_ids = {item["document_id"] for item in findings}
+    reviewed_count = len(snapshot.documents) if selected_type in {"All types", "All inspection types"} else len(report_ids)
+    drivers = _top_failure_driver_rows(findings, limit=6)
     return {
         "inspectionTypes": sorted({item["inspection_type"] for item in snapshot.findings}),
         "selectedInspectionType": selected_type,
         "summary": [
             {"label": "Inspection Type", "value": selected_type},
-            {"label": "Inspections Reviewed", "value": str(len(snapshot.documents))},
+            {"label": "Inspections Reviewed", "value": str(reviewed_count)},
             {"label": "Issues Found", "value": str(len(findings))},
             {
                 "label": "Repeat Issue Rate",
@@ -623,7 +619,7 @@ def _report_payload(document: dict, findings: list[dict]) -> dict:
         "inspector": document["inspector"],
         "trade": document["trade"],
         "sourceFileName": document.get("source_filename"),
-        "units": _document_units_from_findings(document["id"], findings),
+        "units": _document_units(document, findings),
         "issues": [
             {
                 "id": item["id"],
@@ -709,6 +705,17 @@ def _document_units_from_findings(document_id: str, findings: list[dict]) -> lis
         unit_label = item.get("unit_label")
         if isinstance(unit_label, str) and unit_label and unit_label not in units:
             units.append(unit_label)
+    return units
+
+
+def _document_units(document: dict, findings: list[dict]) -> list[str]:
+    units: list[str] = []
+    for unit in document.get("units") or []:
+        if isinstance(unit, str) and unit and unit not in units:
+            units.append(unit)
+    for unit in _document_units_from_findings(document["id"], findings):
+        if unit not in units:
+            units.append(unit)
     return units
 
 

@@ -30,6 +30,12 @@ class RepositoryBackend(Protocol):
     def authenticate_user(self, *, email: str, password: str) -> AuthSession | None:
         ...
 
+    def create_password_reset_token(self, *, email: str) -> dict | None:
+        ...
+
+    def reset_password(self, *, token: str, password: str) -> AuthSession | None:
+        ...
+
     def list_members(self, *, tenant_id: str) -> list[dict]:
         ...
 
@@ -171,24 +177,36 @@ class SqliteRepository:
     def register_tenant(self, *, tenant_name: str, name: str, email: str, password: str) -> AuthSession:
         timestamp = utc_now_iso()
         normalized_email = _normalize_email(email)
+        email_domain = _email_domain(normalized_email)
         tenant_id = create_id("ten")
         tenant_slug = _slug(tenant_name)
         user_id = create_id("usr")
         with self._connect() as connection:
             if connection.execute("SELECT id FROM users WHERE email = ?", (normalized_email,)).fetchone():
                 raise ValueError("An account with this email already exists.")
-            if connection.execute("SELECT id FROM tenants WHERE slug = ?", (tenant_slug,)).fetchone():
-                tenant_slug = f"{tenant_slug}-{tenant_id[-6:]}"
-            connection.execute(
-                "INSERT INTO tenants (id, name, slug, created_at) VALUES (?, ?, ?, ?)",
-                (tenant_id, tenant_name, tenant_slug, timestamp),
-            )
+            existing_tenant = None
+            if email_domain and not _is_public_email_domain(email_domain):
+                existing_tenant = connection.execute(
+                    "SELECT id, name FROM tenants WHERE email_domain = ? LIMIT 1",
+                    (email_domain,),
+                ).fetchone()
+            if existing_tenant:
+                tenant_id = existing_tenant["id"]
+                role = "member"
+            else:
+                role = "admin"
+                if connection.execute("SELECT id FROM tenants WHERE slug = ?", (tenant_slug,)).fetchone():
+                    tenant_slug = f"{tenant_slug}-{tenant_id[-6:]}"
+                connection.execute(
+                    "INSERT INTO tenants (id, name, slug, email_domain, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (tenant_id, tenant_name, tenant_slug, email_domain, timestamp),
+                )
             connection.execute(
                 """
                 INSERT INTO users (id, tenant_id, name, email, password_hash, role, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (user_id, tenant_id, name, normalized_email, _hash_password(password), "admin", timestamp),
+                (user_id, tenant_id, name, normalized_email, _hash_password(password), role, timestamp),
             )
         return self.create_auth_session(user_id=user_id, tenant_id=tenant_id)
 
@@ -201,6 +219,67 @@ class SqliteRepository:
         if not row or not _verify_password(password, row["password_hash"]):
             return None
         return self.create_auth_session(user_id=row["id"], tenant_id=row["tenant_id"])
+
+    def create_password_reset_token(self, *, email: str) -> dict | None:
+        normalized_email = _normalize_email(email)
+        token = secrets.token_urlsafe(32)
+        timestamp = utc_now_iso()
+        expires_at = (datetime.now(tz=UTC).replace(microsecond=0) + timedelta(hours=1)).isoformat()
+        with self._connect() as connection:
+            user = connection.execute(
+                """
+                SELECT u.id, u.name, u.email, u.tenant_id, t.name AS tenant_name
+                FROM users u
+                JOIN tenants t ON t.id = u.tenant_id
+                WHERE u.email = ?
+                """,
+                (normalized_email,),
+            ).fetchone()
+            if not user:
+                return None
+            connection.execute(
+                """
+                INSERT INTO password_reset_tokens (id, user_id, tenant_id, token_hash, created_at, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (create_id("prt"), user["id"], user["tenant_id"], _token_hash(token), timestamp, expires_at),
+            )
+        return {
+            "token": token,
+            "expires_at": expires_at,
+            "user_id": user["id"],
+            "tenant_id": user["tenant_id"],
+            "name": user["name"],
+            "email": user["email"],
+            "tenant_name": user["tenant_name"],
+        }
+
+    def reset_password(self, *, token: str, password: str) -> AuthSession | None:
+        now = utc_now_iso()
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id, user_id, tenant_id
+                FROM password_reset_tokens
+                WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?
+                """,
+                (_token_hash(token), now),
+            ).fetchone()
+            if not row:
+                return None
+            connection.execute(
+                "UPDATE users SET password_hash = ? WHERE id = ? AND tenant_id = ?",
+                (_hash_password(password), row["user_id"], row["tenant_id"]),
+            )
+            connection.execute(
+                "UPDATE password_reset_tokens SET used_at = ? WHERE id = ?",
+                (now, row["id"]),
+            )
+            connection.execute(
+                "UPDATE auth_sessions SET revoked_at = ? WHERE user_id = ? AND tenant_id = ? AND revoked_at IS NULL",
+                (now, row["user_id"], row["tenant_id"]),
+            )
+        return self.create_auth_session(user_id=row["user_id"], tenant_id=row["tenant_id"])
 
     def list_members(self, *, tenant_id: str) -> list[dict]:
         with self._connect() as connection:
@@ -352,9 +431,9 @@ class SqliteRepository:
             connection.execute(
                 """
                 INSERT INTO documents (
-                  id, tenant_id, project_id, file_hash, file_tag, source_filename, storage_path, download_url, inspection_type,
+                  id, tenant_id, project_id, file_hash, file_tag, site_name, address, source_filename, storage_path, download_url, inspection_type,
                   trade, inspector, report_date, status, summary, units_json, uploaded_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     document_id,
@@ -362,6 +441,8 @@ class SqliteRepository:
                     project_id,
                     file_hash,
                     file_tag,
+                    site_name,
+                    address,
                     source_filename,
                     stored_file.storage_path,
                     stored_file.download_url,
@@ -459,7 +540,7 @@ class SqliteRepository:
                 """
                 UPDATE documents
                 SET project_id = ?, source_filename = ?, storage_path = ?, download_url = ?,
-                    inspection_type = ?, trade = ?, inspector = ?, report_date = ?, status = ?,
+                    site_name = ?, address = ?, inspection_type = ?, trade = ?, inspector = ?, report_date = ?, status = ?,
                     summary = ?, units_json = ?, uploaded_at = ?
                 WHERE tenant_id = ? AND id = ?
                 """,
@@ -468,6 +549,8 @@ class SqliteRepository:
                     source_filename,
                     stored_file.storage_path,
                     stored_file.download_url,
+                    extraction.site_name,
+                    extraction.address,
                     extraction.inspection_type,
                     extraction.trade,
                     extraction.inspector,
@@ -703,10 +786,119 @@ class SqliteRepository:
         if "file_tag" not in columns:
             connection.execute("ALTER TABLE documents ADD COLUMN file_tag TEXT")
             connection.execute("UPDATE documents SET file_tag = id WHERE file_tag IS NULL")
+        if "site_name" not in columns:
+            connection.execute("ALTER TABLE documents ADD COLUMN site_name TEXT")
+            connection.execute(
+                """
+                UPDATE documents
+                SET site_name = (
+                  SELECT p.site_name FROM projects p WHERE p.id = documents.project_id
+                )
+                WHERE site_name IS NULL
+                """
+            )
+        if "address" not in columns:
+            connection.execute("ALTER TABLE documents ADD COLUMN address TEXT")
+            connection.execute(
+                """
+                UPDATE documents
+                SET address = (
+                  SELECT p.address FROM projects p WHERE p.id = documents.project_id
+                )
+                WHERE address IS NULL
+                """
+            )
+        if self._documents_have_global_file_uniques(connection):
+            self._rebuild_documents_without_global_uniques(connection)
         connection.execute("DROP INDEX IF EXISTS idx_documents_file_hash_unique")
         connection.execute("DROP INDEX IF EXISTS idx_documents_file_tag_unique")
+        connection.execute("DROP INDEX IF EXISTS idx_documents_file_hash")
+        connection.execute("DROP INDEX IF EXISTS idx_documents_file_tag")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_documents_file_hash ON documents(tenant_id, file_hash)")
         connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_tenant_file_hash_unique ON documents(tenant_id, file_hash)")
         connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_tenant_file_tag_unique ON documents(tenant_id, file_tag)")
+
+    def _documents_have_global_file_uniques(self, connection: sqlite3.Connection) -> bool:
+        for index in connection.execute("PRAGMA index_list(documents)").fetchall():
+            if not index["unique"]:
+                continue
+            columns = [row["name"] for row in connection.execute(f"PRAGMA index_info({index['name']})").fetchall()]
+            if columns in (["file_hash"], ["file_tag"]):
+                return True
+        return False
+
+    def _rebuild_documents_without_global_uniques(self, connection: sqlite3.Connection) -> None:
+        timestamp = utc_now_iso()
+        legacy_table = f"documents_legacy_{int(datetime.now(tz=UTC).timestamp())}"
+        connection.execute("DROP INDEX IF EXISTS idx_documents_file_hash_unique")
+        connection.execute("DROP INDEX IF EXISTS idx_documents_file_tag_unique")
+        connection.execute("DROP INDEX IF EXISTS idx_documents_file_hash")
+        connection.execute("DROP INDEX IF EXISTS idx_documents_file_tag")
+        connection.execute("DROP INDEX IF EXISTS idx_documents_tenant_file_hash_unique")
+        connection.execute("DROP INDEX IF EXISTS idx_documents_tenant_file_tag_unique")
+        connection.execute("DROP INDEX IF EXISTS idx_documents_project_date")
+        connection.execute(f"ALTER TABLE documents RENAME TO {legacy_table}")
+        connection.execute(
+            """
+            CREATE TABLE documents (
+              id TEXT PRIMARY KEY,
+              tenant_id TEXT NOT NULL,
+              project_id TEXT NOT NULL,
+              file_hash TEXT NOT NULL,
+              file_tag TEXT NOT NULL,
+              site_name TEXT,
+              address TEXT,
+              source_filename TEXT NOT NULL,
+              storage_path TEXT NOT NULL,
+              download_url TEXT,
+              inspection_type TEXT NOT NULL,
+              trade TEXT NOT NULL,
+              inspector TEXT NOT NULL,
+              report_date TEXT NOT NULL,
+              status TEXT NOT NULL,
+              summary TEXT NOT NULL,
+              units_json TEXT NOT NULL,
+              uploaded_at TEXT NOT NULL,
+              FOREIGN KEY(project_id) REFERENCES projects(id)
+            )
+            """
+        )
+        connection.execute(
+            f"""
+            INSERT INTO documents (
+              id, tenant_id, project_id, file_hash, file_tag, site_name, address, source_filename,
+              storage_path, download_url, inspection_type, trade, inspector, report_date, status,
+              summary, units_json, uploaded_at
+            )
+            SELECT
+              id,
+              COALESCE(tenant_id, ?),
+              project_id,
+              COALESCE(file_hash, id),
+              CASE
+                WHEN file_tag IS NULL OR file_tag = '' THEN COALESCE(tenant_id, ?) || '-file-' || substr(COALESCE(file_hash, id), 1, 12)
+                WHEN instr(file_tag, '-file-') = 0 THEN COALESCE(tenant_id, ?) || '-' || file_tag
+                ELSE file_tag
+              END,
+              site_name,
+              address,
+              source_filename,
+              storage_path,
+              download_url,
+              inspection_type,
+              trade,
+              inspector,
+              report_date,
+              status,
+              summary,
+              COALESCE(units_json, '[]'),
+              COALESCE(uploaded_at, ?)
+            FROM {legacy_table}
+            """
+            ,
+            (_DEFAULT_TENANT_ID, _DEFAULT_TENANT_ID, _DEFAULT_TENANT_ID, timestamp),
+        )
+        connection.execute(f"DROP TABLE {legacy_table}")
 
     def _ensure_auth_tables(self, connection: sqlite3.Connection) -> None:
         timestamp = utc_now_iso()
@@ -716,10 +908,14 @@ class SqliteRepository:
               id TEXT PRIMARY KEY,
               name TEXT NOT NULL,
               slug TEXT NOT NULL UNIQUE,
+              email_domain TEXT,
               created_at TEXT NOT NULL
             )
             """
         )
+        tenant_columns = {row["name"] for row in connection.execute("PRAGMA table_info(tenants)")}
+        if "email_domain" not in tenant_columns:
+            connection.execute("ALTER TABLE tenants ADD COLUMN email_domain TEXT")
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS users (
@@ -750,12 +946,29 @@ class SqliteRepository:
             """
         )
         connection.execute(
-            "INSERT OR IGNORE INTO tenants (id, name, slug, created_at) VALUES (?, ?, ?, ?)",
-            (_DEFAULT_TENANT_ID, "Default Tenant", "default-tenant", timestamp),
+            """
+            CREATE TABLE IF NOT EXISTS password_reset_tokens (
+              id TEXT PRIMARY KEY,
+              user_id TEXT NOT NULL,
+              tenant_id TEXT NOT NULL,
+              token_hash TEXT NOT NULL UNIQUE,
+              created_at TEXT NOT NULL,
+              expires_at TEXT NOT NULL,
+              used_at TEXT,
+              FOREIGN KEY(user_id) REFERENCES users(id),
+              FOREIGN KEY(tenant_id) REFERENCES tenants(id)
+            )
+            """
+        )
+        connection.execute(
+            "INSERT OR IGNORE INTO tenants (id, name, slug, email_domain, created_at) VALUES (?, ?, ?, ?, ?)",
+            (_DEFAULT_TENANT_ID, "Default Tenant", "default-tenant", None, timestamp),
         )
         connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_lower_unique ON users(lower(email))")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_tenants_email_domain ON tenants(email_domain)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_auth_sessions_token_hash ON auth_sessions(token_hash)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_tenant ON auth_sessions(user_id, tenant_id)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_token_hash ON password_reset_tokens(token_hash)")
         if self.bootstrap_demo_account:
             if not self.demo_admin_password or len(self.demo_admin_password) < 12:
                 raise RuntimeError("SOTERRA_DEMO_ADMIN_PASSWORD must be set to at least 12 characters when demo bootstrap is enabled.")
@@ -809,6 +1022,7 @@ class SqliteRepository:
 class SupabaseRepository:
     def __init__(self, *, url: str, service_role_key: str, session_ttl_hours: int) -> None:
         self.session_ttl_hours = session_ttl_hours
+        self._memory_password_reset_tokens: dict[str, dict] = {}
         try:
             from supabase import create_client
         except ModuleNotFoundError as exc:
@@ -826,13 +1040,33 @@ class SupabaseRepository:
         tenant_id = create_id("ten")
         user_id = create_id("usr")
         normalized_email = _normalize_email(email)
+        email_domain = _email_domain(normalized_email)
         tenant_slug = _slug(tenant_name)
         existing = self.client.table("users").select("id").eq("email", normalized_email).limit(1).execute().data
         if existing:
             raise ValueError("An account with this email already exists.")
-        if self.client.table("tenants").select("id").eq("slug", tenant_slug).limit(1).execute().data:
-            tenant_slug = f"{tenant_slug}-{tenant_id[-6:]}"
-        self.client.table("tenants").insert({"id": tenant_id, "name": tenant_name, "slug": tenant_slug, "created_at": timestamp}).execute()
+        existing_tenant = []
+        if email_domain and not _is_public_email_domain(email_domain):
+            try:
+                existing_tenant = self.client.table("tenants").select("id, name").eq("email_domain", email_domain).limit(1).execute().data
+            except Exception as exc:
+                if not _is_postgrest_missing_column(exc, "email_domain"):
+                    raise
+        if existing_tenant:
+            tenant_id = existing_tenant[0]["id"]
+            role = "member"
+        else:
+            role = "admin"
+            if self.client.table("tenants").select("id").eq("slug", tenant_slug).limit(1).execute().data:
+                tenant_slug = f"{tenant_slug}-{tenant_id[-6:]}"
+            tenant_payload = {"id": tenant_id, "name": tenant_name, "slug": tenant_slug, "email_domain": email_domain, "created_at": timestamp}
+            try:
+                self.client.table("tenants").insert(tenant_payload).execute()
+            except Exception as exc:
+                if not _is_postgrest_missing_column(exc, "email_domain"):
+                    raise
+                tenant_payload.pop("email_domain", None)
+                self.client.table("tenants").insert(tenant_payload).execute()
         self.client.table("users").insert(
             {
                 "id": user_id,
@@ -840,7 +1074,7 @@ class SupabaseRepository:
                 "name": name,
                 "email": normalized_email,
                 "password_hash": _hash_password(password),
-                "role": "admin",
+                "role": role,
                 "created_at": timestamp,
             }
         ).execute()
@@ -851,6 +1085,82 @@ class SupabaseRepository:
         if not row or not _verify_password(password, row[0]["password_hash"]):
             return None
         return self.create_auth_session(user_id=row[0]["id"], tenant_id=row[0]["tenant_id"])
+
+    def create_password_reset_token(self, *, email: str) -> dict | None:
+        normalized_email = _normalize_email(email)
+        user_rows = (
+            self.client.table("users")
+            .select("id, tenant_id, name, email, tenants(name)")
+            .eq("email", normalized_email)
+            .limit(1)
+            .execute()
+            .data
+        )
+        if not user_rows:
+            return None
+        user = user_rows[0]
+        token = secrets.token_urlsafe(32)
+        expires_at = (datetime.now(tz=UTC).replace(microsecond=0) + timedelta(hours=1)).isoformat()
+        tenant = user.get("tenants") or {}
+        payload = {
+            "token": token,
+            "expires_at": expires_at,
+            "user_id": user["id"],
+            "tenant_id": user["tenant_id"],
+            "name": user["name"],
+            "email": user["email"],
+            "tenant_name": tenant.get("name", "Tenant"),
+        }
+        try:
+            self.client.table("password_reset_tokens").insert(
+                {
+                    "id": create_id("prt"),
+                    "user_id": user["id"],
+                    "tenant_id": user["tenant_id"],
+                    "token_hash": _token_hash(token),
+                    "created_at": utc_now_iso(),
+                    "expires_at": expires_at,
+                }
+            ).execute()
+        except Exception as exc:
+            if not _is_postgrest_missing_relation(exc, "password_reset_tokens"):
+                raise
+            self._memory_password_reset_tokens[_token_hash(token)] = payload
+        return payload
+
+    def reset_password(self, *, token: str, password: str) -> AuthSession | None:
+        now = utc_now_iso()
+        try:
+            rows = (
+                self.client.table("password_reset_tokens")
+                .select("id, user_id, tenant_id")
+                .eq("token_hash", _token_hash(token))
+                .is_("used_at", "null")
+                .gt("expires_at", now)
+                .limit(1)
+                .execute()
+                .data
+            )
+        except Exception as exc:
+            if not _is_postgrest_missing_relation(exc, "password_reset_tokens"):
+                raise
+            return self._reset_password_from_memory_token(token=token, password=password, now=now)
+        if not rows:
+            return None
+        row = rows[0]
+        self.client.table("users").update({"password_hash": _hash_password(password)}).eq("id", row["user_id"]).eq("tenant_id", row["tenant_id"]).execute()
+        self.client.table("password_reset_tokens").update({"used_at": now}).eq("id", row["id"]).execute()
+        self.client.table("auth_sessions").update({"revoked_at": now}).eq("user_id", row["user_id"]).eq("tenant_id", row["tenant_id"]).is_("revoked_at", "null").execute()
+        return self.create_auth_session(user_id=row["user_id"], tenant_id=row["tenant_id"])
+
+    def _reset_password_from_memory_token(self, *, token: str, password: str, now: str) -> AuthSession | None:
+        token_hash = _token_hash(token)
+        row = self._memory_password_reset_tokens.pop(token_hash, None)
+        if not row or row["expires_at"] <= now:
+            return None
+        self.client.table("users").update({"password_hash": _hash_password(password)}).eq("id", row["user_id"]).eq("tenant_id", row["tenant_id"]).execute()
+        self.client.table("auth_sessions").update({"revoked_at": now}).eq("user_id", row["user_id"]).eq("tenant_id", row["tenant_id"]).is_("revoked_at", "null").execute()
+        return self.create_auth_session(user_id=row["user_id"], tenant_id=row["tenant_id"])
 
     def list_members(self, *, tenant_id: str) -> list[dict]:
         return self.client.table("users").select("id, tenant_id, name, email, role, created_at").eq("tenant_id", tenant_id).order("name").execute().data
@@ -991,26 +1301,34 @@ class SupabaseRepository:
             .data[0]
         )
 
-        self.client.table("documents").insert(
-            {
-                "id": document_id,
-                "tenant_id": tenant_id,
-                "project_id": project["id"],
-                "file_hash": file_hash,
-                "file_tag": file_tag,
-                "source_filename": source_filename,
-                "storage_path": stored_file.storage_path,
-                "download_url": stored_file.download_url,
-                "inspection_type": "Pending extraction",
-                "trade": trade or "General",
-                "inspector": "Pending extractor",
-                "report_date": timestamp[:10],
-                "status": "In progress",
-                "summary": "Extraction pending.",
-                "units_json": [],
-                "uploaded_at": timestamp,
-            }
-        ).execute()
+        document_payload = {
+            "id": document_id,
+            "tenant_id": tenant_id,
+            "project_id": project["id"],
+            "file_hash": file_hash,
+            "file_tag": file_tag,
+            "site_name": site_name,
+            "address": address,
+            "source_filename": source_filename,
+            "storage_path": stored_file.storage_path,
+            "download_url": stored_file.download_url,
+            "inspection_type": "Pending extraction",
+            "trade": trade or "General",
+            "inspector": "Pending extractor",
+            "report_date": timestamp[:10],
+            "status": "In progress",
+            "summary": "Extraction pending.",
+            "units_json": [],
+            "uploaded_at": timestamp,
+        }
+        try:
+            self.client.table("documents").insert(document_payload).execute()
+        except Exception as exc:
+            if not (_is_postgrest_missing_column(exc, "site_name") or _is_postgrest_missing_column(exc, "address")):
+                raise
+            document_payload.pop("site_name", None)
+            document_payload.pop("address", None)
+            self.client.table("documents").insert(document_payload).execute()
 
         self.client.table("jobs").insert(
             {
@@ -1054,22 +1372,30 @@ class SupabaseRepository:
             .data[0]
         )
 
-        self.client.table("documents").update(
-            {
-                "project_id": project["id"],
-                "source_filename": source_filename,
-                "storage_path": stored_file.storage_path,
-                "download_url": stored_file.download_url,
-                "inspection_type": extraction.inspection_type,
-                "trade": extraction.trade,
-                "inspector": extraction.inspector,
-                "report_date": extraction.report_date,
-                "status": extraction.overall_outcome,
-                "summary": extraction.summary,
-                "units_json": extraction.units,
-                "uploaded_at": timestamp,
-            }
-        ).eq("tenant_id", tenant_id).eq("id", document_id).execute()
+        document_payload = {
+            "project_id": project["id"],
+            "source_filename": source_filename,
+            "storage_path": stored_file.storage_path,
+            "download_url": stored_file.download_url,
+            "site_name": extraction.site_name,
+            "address": extraction.address,
+            "inspection_type": extraction.inspection_type,
+            "trade": extraction.trade,
+            "inspector": extraction.inspector,
+            "report_date": extraction.report_date,
+            "status": extraction.overall_outcome,
+            "summary": extraction.summary,
+            "units_json": extraction.units,
+            "uploaded_at": timestamp,
+        }
+        try:
+            self.client.table("documents").update(document_payload).eq("tenant_id", tenant_id).eq("id", document_id).execute()
+        except Exception as exc:
+            if not (_is_postgrest_missing_column(exc, "site_name") or _is_postgrest_missing_column(exc, "address")):
+                raise
+            document_payload.pop("site_name", None)
+            document_payload.pop("address", None)
+            self.client.table("documents").update(document_payload).eq("tenant_id", tenant_id).eq("id", document_id).execute()
 
         self.client.table("findings").delete().eq("tenant_id", tenant_id).eq("document_id", document_id).execute()
 
@@ -1168,8 +1494,8 @@ class SupabaseRepository:
                     **row,
                     "project_name": project.get("name", "Unknown project"),
                     "project_slug": project.get("slug", "unknown-project"),
-                    "site_name": project.get("site_name", "Unknown site"),
-                    "address": project.get("address"),
+                    "site_name": row.get("site_name") or project.get("site_name", "Unknown site"),
+                    "address": row.get("address") or project.get("address"),
                     "units": row.get("units_json") or [],
                 }
             )
@@ -1280,8 +1606,8 @@ SELECT
   d.*,
   p.name AS project_name,
   p.slug AS project_slug,
-  p.site_name AS site_name,
-  p.address AS address
+  COALESCE(d.site_name, p.site_name) AS site_name,
+  COALESCE(d.address, p.address) AS address
 FROM documents d
 JOIN projects p ON p.id = d.project_id
 WHERE d.tenant_id = ?
@@ -1301,7 +1627,7 @@ SELECT
   f.*,
   p.name AS project_name,
   p.slug AS project_slug,
-  p.site_name AS site_name,
+  COALESCE(d.site_name, p.site_name) AS site_name,
   d.inspection_type AS inspection_type,
   d.status AS document_status
 FROM findings f
@@ -1329,6 +1655,42 @@ def _dict(row: sqlite3.Row) -> dict:
 
 def _normalize_email(email: str) -> str:
     return email.strip().lower()
+
+
+def _email_domain(email: str) -> str | None:
+    _, separator, domain = _normalize_email(email).rpartition("@")
+    if not separator:
+        return None
+    return domain.strip() or None
+
+
+def _is_public_email_domain(domain: str) -> bool:
+    return domain in {
+        "aol.com",
+        "icloud.com",
+        "gmail.com",
+        "googlemail.com",
+        "hotmail.com",
+        "live.com",
+        "mail.com",
+        "me.com",
+        "msn.com",
+        "outlook.com",
+        "proton.me",
+        "protonmail.com",
+        "yahoo.com",
+        "ymail.com",
+    }
+
+
+def _is_postgrest_missing_relation(exc: Exception, relation: str) -> bool:
+    text = str(exc)
+    return "PGRST205" in text and relation in text
+
+
+def _is_postgrest_missing_column(exc: Exception, column: str) -> bool:
+    text = str(exc)
+    return ("PGRST204" in text or "PGRST204" in repr(exc)) and column in text
 
 
 def _token_hash(access_token: str) -> str:

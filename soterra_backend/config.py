@@ -19,6 +19,21 @@ def _find_project_root() -> Path:
     return current.parents[1]
 
 
+def _load_env_file(repo_root: Path) -> None:
+    env_path = repo_root / ".env"
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
 def _default_local_data_dir(repo_root: Path) -> Path:
     # Vercel functions run on a read-only filesystem except for /tmp.
     if os.getenv("VERCEL"):
@@ -59,10 +74,19 @@ class Settings:
     max_upload_bytes: int
     bootstrap_demo_account: bool
     demo_admin_password: str | None
+    app_base_url: str
+    smtp_host: str | None
+    smtp_port: int
+    smtp_username: str | None
+    smtp_password: str | None
+    smtp_from_email: str
+    smtp_from_name: str
+    smtp_use_tls: bool
 
     @classmethod
     def from_env(cls) -> "Settings":
         repo_root = _find_project_root()
+        _load_env_file(repo_root)
         local_data_dir = _default_local_data_dir(repo_root)
 
         openai_api_key = os.getenv("OPENAI_API_KEY")
@@ -118,4 +142,12 @@ class Settings:
             max_upload_bytes=int(os.getenv("SOTERRA_MAX_UPLOAD_BYTES", str(10 * 1024 * 1024))),
             bootstrap_demo_account=_to_bool(os.getenv("SOTERRA_BOOTSTRAP_DEMO_ACCOUNT"), False),
             demo_admin_password=os.getenv("SOTERRA_DEMO_ADMIN_PASSWORD"),
+            app_base_url=os.getenv("SOTERRA_APP_BASE_URL", os.getenv("APP_BASE_URL", "http://localhost:3000")).rstrip("/"),
+            smtp_host=os.getenv("SOTERRA_SMTP_HOST") or os.getenv("SMTP_HOST"),
+            smtp_port=int(os.getenv("SOTERRA_SMTP_PORT", os.getenv("SMTP_PORT", "587"))),
+            smtp_username=os.getenv("SOTERRA_SMTP_USERNAME") or os.getenv("SMTP_USERNAME"),
+            smtp_password=os.getenv("SOTERRA_SMTP_PASSWORD") or os.getenv("SMTP_PASSWORD"),
+            smtp_from_email=os.getenv("SOTERRA_EMAIL_FROM", os.getenv("SMTP_FROM_EMAIL", "no-reply@soterra.local")),
+            smtp_from_name=os.getenv("SOTERRA_EMAIL_FROM_NAME", "Soterra"),
+            smtp_use_tls=_to_bool(os.getenv("SOTERRA_SMTP_USE_TLS", os.getenv("SMTP_USE_TLS")), True),
         )

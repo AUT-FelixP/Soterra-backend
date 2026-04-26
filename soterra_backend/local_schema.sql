@@ -2,6 +2,7 @@ CREATE TABLE IF NOT EXISTS tenants (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   slug TEXT NOT NULL UNIQUE,
+  email_domain TEXT,
   created_at TEXT NOT NULL
 );
 
@@ -28,6 +29,18 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
   FOREIGN KEY(tenant_id) REFERENCES tenants(id)
 );
 
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  tenant_id TEXT NOT NULL,
+  token_hash TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  used_at TEXT,
+  FOREIGN KEY(user_id) REFERENCES users(id),
+  FOREIGN KEY(tenant_id) REFERENCES tenants(id)
+);
+
 CREATE TABLE IF NOT EXISTS projects (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL,
@@ -44,6 +57,8 @@ CREATE TABLE IF NOT EXISTS documents (
   project_id TEXT NOT NULL,
   file_hash TEXT NOT NULL,
   file_tag TEXT NOT NULL,
+  site_name TEXT,
+  address TEXT,
   source_filename TEXT NOT NULL,
   storage_path TEXT NOT NULL,
   download_url TEXT,
@@ -112,11 +127,17 @@ CREATE INDEX IF NOT EXISTS idx_documents_project_date
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_lower_unique
   ON users(lower(email));
 
+CREATE INDEX IF NOT EXISTS idx_tenants_email_domain
+  ON tenants(email_domain);
+
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_token_hash
   ON auth_sessions(token_hash);
 
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_tenant
   ON auth_sessions(user_id, tenant_id);
+
+CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_token_hash
+  ON password_reset_tokens(token_hash);
 
 CREATE INDEX IF NOT EXISTS idx_documents_file_hash
   ON documents(tenant_id, file_hash);
@@ -144,7 +165,7 @@ SELECT
   d.id AS report_id,
   p.slug AS project_slug,
   p.name AS project_name,
-  p.site_name,
+  COALESCE(d.site_name, p.site_name) AS site_name,
   d.report_date,
   d.inspection_type,
   d.trade,
@@ -164,7 +185,7 @@ SELECT
 FROM documents d
 JOIN projects p ON p.id = d.project_id
 LEFT JOIN findings f ON f.document_id = d.id
-GROUP BY d.id, p.slug, p.name, p.site_name, d.report_date, d.inspection_type, d.trade, d.status;
+GROUP BY d.id, p.slug, p.name, COALESCE(d.site_name, p.site_name), d.report_date, d.inspection_type, d.trade, d.status;
 
 CREATE VIEW IF NOT EXISTS analytics_company_metrics_v AS
 SELECT
