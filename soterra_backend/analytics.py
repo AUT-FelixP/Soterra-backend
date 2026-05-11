@@ -72,10 +72,6 @@ def build_dashboard_overview(snapshot: RepositorySnapshot) -> dict:
             {"label": "Issues found", "value": str(total_findings)},
             {"label": "Open issues", "value": str(len(open_findings))},
             {"label": "Units captured", "value": str(len(units_captured))},
-            {
-                "label": "Issues / inspection",
-                "value": f"{(total_findings / max(total_reports, 1)):.1f}",
-            },
         ],
         "liveTracker": {
             "openIssues": len(open_findings),
@@ -275,6 +271,26 @@ def build_dashboard_risk(
     window: str = "30d",
     inspection_id: str | None = None,
 ) -> dict:
+    if not snapshot.documents:
+        return {
+            "title": "Upcoming inspection risk",
+            "description": "See which upcoming inspections may need the most attention.",
+            "filters": {
+                "sites": ["All sites"],
+                "selectedSite": site,
+                "windows": [
+                    {"label": "Next 30 days", "value": "30d"},
+                    {"label": "Next 14 days", "value": "14d"},
+                    {"label": "Next 60 days", "value": "60d"},
+                ],
+                "selectedWindow": window,
+            },
+            "inspections": [],
+            "selectedInspectionId": "",
+            "likelyFailureTitle": "Items to watch",
+            "likelyFailureSubtitle": "No uploaded reports are available for inspection risk.",
+            "likelyFailures": [],
+        }
     predictions = _normalized_predictions(snapshot)
     if site != "All sites":
         predictions = [item for item in predictions if item["site_name"] == site]
@@ -324,6 +340,25 @@ def build_inspection_risk_page(
 ) -> dict:
     selected_site = site or "All Sites"
     selected_range = date_range or "30d"
+    if not snapshot.documents:
+        return {
+            "title": "Upcoming Inspection Risk",
+            "description": "See which upcoming inspections may need the most attention.",
+            "filters": {
+                "sites": ["All Sites"],
+                "dateRanges": [
+                    {"label": "Next 30 days", "value": "30d"},
+                    {"label": "Next 60 days", "value": "60d"},
+                    {"label": "Next 90 days", "value": "90d"},
+                ],
+                "selectedSite": selected_site,
+                "selectedDateRange": selected_range,
+                "inspectionTypes": [],
+                "selectedInspectionType": "General",
+            },
+            "upcomingInspections": [],
+            "likelyFailureItems": [],
+        }
     max_days = 30 if selected_range == "30d" else 60 if selected_range == "60d" else 90
     predictions = _normalized_predictions(snapshot)
     if selected_site != "All Sites":
@@ -549,6 +584,14 @@ def build_dashboard_top_failures(snapshot: RepositorySnapshot, inspection_type: 
 
 
 def build_dashboard_upcoming_risk(snapshot: RepositorySnapshot) -> dict:
+    if not snapshot.documents:
+        return {
+            "title": "No upcoming inspections",
+            "daysUntilInspection": 0,
+            "likelyFailures": [],
+            "href": "/app/inspection-risk",
+            "description": "Upload a report first to show upcoming inspection risk here.",
+        }
     upcoming = _normalized_predictions(snapshot)
     if not upcoming:
         return {
@@ -748,6 +791,8 @@ def _filter_findings_by_type(findings: list[dict], inspection_type: str) -> list
 
 
 def _overview_risks(snapshot: RepositorySnapshot) -> list[dict]:
+    if not snapshot.documents:
+        return []
     risks = []
     for item in _normalized_predictions(snapshot)[:3]:
         failures = _likely_failures(snapshot.findings, item["inspection_type"])
@@ -791,9 +836,14 @@ def _likely_failures(findings: list[dict], inspection_type: str) -> list[dict]:
 
 
 def _normalized_predictions(snapshot: RepositorySnapshot) -> list[dict]:
+    if not snapshot.documents:
+        return []
+    active_project_ids = {item.get("project_id") for item in snapshot.documents}
     today = date.today()
     rows = []
     for index, item in enumerate(snapshot.predicted_inspections):
+        if item.get("project_id") not in active_project_ids:
+            continue
         expected = datetime.fromisoformat(item["expected_date"]).date()
         if expected < today:
             expected = date.fromordinal(today.toordinal() + 7 * (index + 1))

@@ -16,6 +16,7 @@ dependencies = [
   "pydantic>=2.11,<3",
   "PyMuPDF>=1.26,<2",
   "python-multipart>=0.0.20,<1",
+  "smolagents[litellm]>=1.18,<2",
   "supabase>=2.16,<3",
   "uvicorn>=0.35,<1",
 ]

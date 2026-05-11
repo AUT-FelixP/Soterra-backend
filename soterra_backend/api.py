@@ -8,6 +8,7 @@ from fastapi import BackgroundTasks, Body, FastAPI, File, Form, Header, HTTPExce
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from .agent import AgentChatRequest, AgentConfigurationError, AgentDisabledError, SoterraAgentService
 from .analytics import (
     build_company_page,
     build_dashboard_insights_preview,
@@ -110,6 +111,7 @@ def create_app() -> FastAPI:
         repository=repository,
         storage=storage,
     )
+    agent_service = SoterraAgentService(repository=repository)
 
     app = FastAPI(
         title="Soterra Backend",
@@ -414,6 +416,35 @@ def create_app() -> FastAPI:
     @app.get("/insights")
     def insights_summary(tenant_id: str = Header(default=DEFAULT_TENANT_ID, alias="X-Soterra-Tenant-Id")) -> dict:
         return build_legacy_insights_summary(repository.load_snapshot(tenant_id))
+
+    @app.get("/agent/chat/status")
+    def agent_chat_status(request: Request) -> dict:
+        session = getattr(request.state, "auth_session", None)
+        if not session:
+            raise HTTPException(status_code=401, detail="Authentication required.")
+        return agent_service.status()
+
+    @app.post("/agent/chat")
+    def agent_chat(request: Request, payload: AgentChatRequest) -> dict:
+        session = getattr(request.state, "auth_session", None)
+        if not session:
+            raise HTTPException(status_code=401, detail="Authentication required.")
+        try:
+            response = agent_service.chat(
+                message=payload.message,
+                tenant_id=session.user.tenant_id,
+                user_id=session.user.id,
+                role=session.user.role,
+                report_id=payload.report_id,
+                issue_id=payload.issue_id,
+                project_slug=payload.project_slug,
+                page_context=payload.page_context,
+            )
+        except AgentDisabledError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except AgentConfigurationError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return response.model_dump()
 
     @app.get("/dashboard/project/{slug}")
     def dashboard_project(slug: str, tenant_id: str = Header(default=DEFAULT_TENANT_ID, alias="X-Soterra-Tenant-Id")) -> dict:

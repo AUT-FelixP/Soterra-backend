@@ -147,8 +147,13 @@ The local database file is:
 Set these environment variables:
 
 - `BACKEND_BASE_URL`
-- `OPENAI_API_KEY`
-- `OPENAI_MODEL`
+- `HF_TOKEN` for the smolagents chat agent
+- `SOTERRA_AGENT_ENABLED=true`
+- `SOTERRA_AGENT_MODEL_PROVIDER=huggingface`
+- `SOTERRA_AGENT_MODEL_ID=Qwen/Qwen2.5-72B-Instruct`
+- `SOTERRA_AGENT_HF_PROVIDER` optional Hugging Face Inference Provider name
+- `OPENAI_API_KEY` only when using the OpenAI report extractor
+- `OPENAI_MODEL` only when using the OpenAI report extractor
 - `SOTERRA_MODEL_EXTRACTOR=openai`
 - `SOTERRA_PACKAGE_EXTRACTOR=doctr_rules_presidio`
 - `SUPABASE_URL`
@@ -182,8 +187,13 @@ Deploy the Python package as a separate Vercel Python project or as a Vercel Ser
 
 Recommended backend environment variables on Vercel:
 
-- `OPENAI_API_KEY`
-- `OPENAI_MODEL`
+- `HF_TOKEN`
+- `SOTERRA_AGENT_ENABLED=true`
+- `SOTERRA_AGENT_MODEL_PROVIDER=huggingface`
+- `SOTERRA_AGENT_MODEL_ID=Qwen/Qwen2.5-72B-Instruct`
+- `SOTERRA_AGENT_HF_PROVIDER` optional
+- `OPENAI_API_KEY` only when using the OpenAI report extractor
+- `OPENAI_MODEL` only when using the OpenAI report extractor
 - `SOTERRA_MODEL_EXTRACTOR=openai`
 - `SOTERRA_PACKAGE_EXTRACTOR=doctr_rules_presidio`
 - `SUPABASE_URL`

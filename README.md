@@ -19,8 +19,13 @@ FastAPI backend for report ingestion, extraction, analytics, and persistence.
 
 ## Required environment variables
 
-- `OPENAI_API_KEY`
-- `OPENAI_MODEL`
+- `HF_TOKEN` for the smolagents chat agent when `SOTERRA_AGENT_ENABLED=true`
+- `SOTERRA_AGENT_ENABLED=true`
+- `SOTERRA_AGENT_MODEL_PROVIDER=huggingface`
+- `SOTERRA_AGENT_MODEL_ID=Qwen/Qwen2.5-72B-Instruct`
+- `SOTERRA_AGENT_HF_PROVIDER` optional Hugging Face Inference Provider name
+- `OPENAI_API_KEY` only when using the OpenAI report extractor or OpenAI agent provider
+- `OPENAI_MODEL` only when using the OpenAI report extractor or OpenAI agent provider
 - `SOTERRA_MODEL_EXTRACTOR`
 - `SOTERRA_PACKAGE_EXTRACTOR`
 - `SOTERRA_REPOSITORY_MODE`
