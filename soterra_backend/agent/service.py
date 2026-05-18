@@ -196,6 +196,8 @@ class SoterraAgentService:
         tools = {tool.name: tool for tool in build_soterra_tools(self.repository, tenant_id, lambda name: used_tools.append(name) if name not in used_tools else None)}
         normalized = f"{page_context or ''} {message}".lower()
 
+        if _is_off_domain_question(normalized):
+            return _answer_off_domain()
         if report_id:
             payload = tools["get_report_detail"].forward(tenant_id, report_id)
             return _answer_from_report_detail(payload)
@@ -205,9 +207,27 @@ class SoterraAgentService:
         if project_slug:
             payload = tools["get_project_metrics"].forward(tenant_id, project_slug)
             return _answer_from_project_metrics(payload)
+        if any(term in normalized for term in ["schema", "database", "table", "field", "coverage", "data source", "route", "endpoint"]):
+            payload = tools["get_data_schema_catalog"].forward(tenant_id)
+            return _answer_from_schema_catalog(payload)
+        if any(term in normalized for term in ["member", "members", "user", "users", "admin", "role", "team", "access"]):
+            payload = tools["get_tenant_members"].forward(tenant_id)
+            return _answer_from_tenant_members(payload)
+        if any(term in normalized for term in ["upload", "uploads", "processing", "extraction", "extractor", "job", "jobs", "failed", "pending"]):
+            payload = tools["get_ingestion_jobs"].forward(tenant_id)
+            return _answer_from_ingestion_jobs(payload)
+        if any(term in normalized for term in ["passed", "pass inspection", "closed", "closed issues", "highest issues", "most issues", "category", "categories", "fire", "reinspection", "this week", "fix this week"]):
+            payload = tools["get_issue_analytics"].forward(tenant_id)
+            return _answer_from_issue_analytics(payload, normalized)
+        if any(term in normalized for term in ["next inspection", "inspection due", "due for", "upcoming inspections", "all properties"]):
+            payload = tools["get_inspection_risk"].forward(tenant_id)
+            return _answer_from_inspection_risk(payload)
         if any(term in normalized for term in ["open", "overdue", "issue", "issues", "tracker", "attention", "first"]):
             payload = tools["get_tracker_summary"].forward(tenant_id)
             return _answer_from_tracker_summary(payload)
+        if any(term in normalized for term in ["project", "projects", "site", "sites", "address", "slug"]):
+            payload = tools["get_project_catalog"].forward(tenant_id)
+            return _answer_from_project_catalog(payload)
         if any(term in normalized for term in ["repeat", "recurring", "failure", "failures", "waterproofing", "root cause"]):
             payload = tools["get_top_failures"].forward(tenant_id)
             return _answer_from_top_failures(payload)
@@ -287,9 +307,54 @@ class SoterraAgentService:
             return "high"
         if any(phrase in lowered for phrase in ["could not find", "not enough", "missing data", "missing soterra data", "unclear", "no upcoming inspections"]):
             return "low"
+        if "only answer from soterra construction data" in lowered:
+            return "low"
         if used_tools:
             return "medium"
         return "low"
+
+
+def _is_off_domain_question(normalized: str) -> bool:
+    off_domain_terms = [
+        "all blacks",
+        "rugby",
+        "cricket",
+        "football match",
+        "sports",
+        "weather",
+        "stock price",
+        "movie",
+        "recipe",
+        "restaurant",
+        "flight",
+    ]
+    construction_terms = [
+        "inspection",
+        "report",
+        "issue",
+        "site",
+        "project",
+        "property",
+        "properties",
+        "reinspection",
+        "defect",
+        "trade",
+        "fire",
+        "waterproof",
+        "category",
+        "tenant",
+        "member",
+        "schema",
+        "database",
+    ]
+    return any(term in normalized for term in off_domain_terms) and not any(term in normalized for term in construction_terms)
+
+
+def _answer_off_domain() -> str:
+    return (
+        "I can only answer from Soterra construction data: inspections, reports, issues, projects, sites, members, and backend data. "
+        "Ask me a construction, inspection, report, or issue question and I can help quickly."
+    )
 
 
 def _answer_from_report_detail(payload: dict) -> str:
@@ -325,6 +390,125 @@ def _answer_from_project_metrics(payload: dict) -> str:
     metric_text = ", ".join(f"{item.get('label')}: {item.get('value')}" for item in metrics[:4])
     driver_text = ", ".join(str(item.get("issue")) for item in drivers[:3] if item.get("issue")) or "no repeated failure drivers"
     return f"{payload.get('title', 'This project')} shows {metric_text}. Main failure areas: {driver_text}. Suggested next action: review open items and repeated failures before the next inspection."
+
+
+def _answer_from_schema_catalog(payload: dict) -> str:
+    tables = payload.get("tables") or []
+    views = payload.get("analyticsViews") or []
+    if not tables:
+        return "I could not load the backend data map clearly enough to answer that."
+    covered = ", ".join(str(item.get("table")) for item in tables[:9])
+    return (
+        f"The agent has a data map for these backend tables: {covered}. "
+        f"It also understands {len(views)} analytics views. Sensitive auth data is schema-aware only, so I can explain what it does without exposing hashes, tokens, or private storage paths."
+    )
+
+
+def _answer_from_tenant_members(payload: dict) -> str:
+    members = payload.get("items") or []
+    if not members:
+        return "I could not find tenant members in the current Soterra data."
+    admins = [item for item in members if item.get("role") == "admin"]
+    return f"The tenant has {len(members)} member account(s), including {len(admins)} admin(s). Admins: {', '.join(item.get('name') or item.get('email') for item in admins) or 'none listed'}."
+
+
+def _answer_from_project_catalog(payload: dict) -> str:
+    projects = payload.get("items") or []
+    if not projects:
+        return "I could not find any projects in the current Soterra data."
+    lines = [f"I found {len(projects)} project(s):"]
+    for project in projects[:5]:
+        lines.append(
+            f"- {project.get('name')} at {project.get('site')}: {project.get('reportCount', 0)} reports and {project.get('issueCount', 0)} issues."
+        )
+    return "\n".join(lines)
+
+
+def _answer_from_ingestion_jobs(payload: dict) -> str:
+    jobs = payload.get("items") or []
+    if not jobs:
+        return "I could not find any report ingestion or extraction jobs in the current Soterra data."
+    breakdown = payload.get("statusBreakdown") or {}
+    lines = [f"I found {payload.get('count', len(jobs))} ingestion job(s). Status breakdown: {breakdown}."]
+    for job in jobs[:5]:
+        lines.append(
+            f"- {job.get('reportName') or job.get('documentId')}: {job.get('status', 'unknown')} via {job.get('extractor', 'unknown extractor')}."
+        )
+    return "\n".join(lines)
+
+
+def _answer_from_issue_analytics(payload: dict, normalized: str) -> str:
+    if payload.get("error"):
+        return "I could not load enough issue analytics to answer that clearly."
+    if "passed" in normalized or "pass inspection" in normalized:
+        sites = payload.get("passedSites") or []
+        if not sites:
+            return "I do not see any sites that clearly passed inspection with all reports completed and no open issues."
+        lines = ["Sites that look passed based on completed reports and no open issues:"]
+        for site in sites[:6]:
+            lines.append(f"- {site.get('site')}: {site.get('reports', 0)} completed reports, {site.get('closedIssues', 0)} closed issues.")
+        return "\n".join(lines)
+    if "closed" in normalized:
+        closed = payload.get("closedProjectIssues") or []
+        if not closed:
+            return "I do not see any closed project issues in the current Soterra data."
+        lines = ["Recently closed project issues:"]
+        for issue in closed[:6]:
+            lines.append(f"- {issue.get('title')}: {issue.get('project')} / {issue.get('site')}, {issue.get('trade')} trade.")
+        return "\n".join(lines)
+    if "category" in normalized or "categories" in normalized or "fire" in normalized:
+        categories = payload.get("categoryBreakdown") or []
+        if not categories:
+            return "I could not find issue categories in the current Soterra data."
+        top = categories[0]
+        lines = [f"The biggest issue category is {top.get('category')} with {top.get('issueCount')} issue(s)."]
+        for category in categories[1:6]:
+            lines.append(f"- {category.get('category')}: {category.get('issueCount')} issue(s).")
+        return "\n".join(lines)
+    if "highest issues" in normalized or "most issues" in normalized or ("site" in normalized and "issue" in normalized):
+        sites = payload.get("topSitesByIssueCount") or []
+        causes = payload.get("categoryBreakdown") or []
+        if not sites:
+            return "I could not find site-level issue counts in the current Soterra data."
+        top_site = sites[0]
+        cause_text = ", ".join(f"{item.get('category')} ({item.get('issueCount')})" for item in causes[:3]) or "no clear category causes listed"
+        return f"{top_site.get('site')} has the highest issue count with {top_site.get('issueCount')} issue(s). Likely cause areas across the data are: {cause_text}. Suggested next action: review the top category items first and confirm ownership by trade."
+    if "reinspection" in normalized or "repeat" in normalized or "root cause" in normalized or "repitative" in normalized or "repetitive" in normalized:
+        causes = payload.get("reinspectionRootCauses") or []
+        if not causes:
+            return "I could not find repeat or reinspection-linked issue causes in the current Soterra data."
+        lines = ["Repeat issues most likely to drive reinspection:"]
+        for issue in causes[:6]:
+            lines.append(
+                f"- {issue.get('title')}: {issue.get('severity', 'Unknown')} severity, {issue.get('trade')} trade, {issue.get('project')}."
+            )
+        lines.append("Suggested next action: close these before booking reinspection and capture evidence for each trade.")
+        return "\n".join(lines)
+
+    open_items = payload.get("openHighPriorityThisWeek") or []
+    if not open_items:
+        return "I do not see open high-priority issues that need fixing this week in the current Soterra data."
+    lines = ["Open issues to fix this week, ordered by priority:"]
+    for issue in open_items[:6]:
+        lines.append(f"- {issue.get('title')}: {issue.get('severity', 'Unknown')} severity, {issue.get('project')} / {issue.get('site')}, {issue.get('trade')} trade.")
+    return "\n".join(lines)
+
+
+def _answer_from_inspection_risk(payload: dict) -> str:
+    inspections = payload.get("upcomingInspections") or []
+    failures = payload.get("likelyFailureItems") or []
+    if not inspections:
+        return "I do not see upcoming inspections in the current Soterra data."
+    lines = ["Upcoming inspections across properties:"]
+    for inspection in inspections[:8]:
+        lines.append(
+            f"- {inspection.get('site')}: {inspection.get('type')} due {inspection.get('expectedDate')} ({inspection.get('riskLevel')} risk)."
+        )
+    if failures:
+        lines.append("High-priority issues to watch before those inspections:")
+        for failure in failures[:5]:
+            lines.append(f"- {failure.get('issue')}: seen {failure.get('historicalFailCount')} time(s), {failure.get('failureShare')}% failure share.")
+    return "\n".join(lines)
 
 
 def _answer_from_tracker_summary(payload: dict) -> str:
