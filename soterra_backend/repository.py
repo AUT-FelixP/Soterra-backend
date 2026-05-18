@@ -707,7 +707,6 @@ class SqliteRepository:
             ).fetchone()["count"]
             if remaining == 0:
                 connection.execute("DELETE FROM predicted_inspections WHERE tenant_id = ? AND project_id = ?", (tenant_id, project_id))
-                connection.execute("DELETE FROM projects WHERE tenant_id = ? AND id = ?", (tenant_id, project_id))
         return {"id": report_id, "storage_path": storage_path}
 
     def get_issue(self, tenant_id: str, issue_id: str) -> dict | None:
@@ -1262,23 +1261,48 @@ class SupabaseRepository:
         trade: str,
     ) -> None:
         timestamp = utc_now_iso()
-        project = (
+        project_slug = _slug(project_name)
+        existing_project = (
             self.client.table("projects")
-            .upsert(
-                {
-                    "id": create_id("prj"),
-                    "tenant_id": tenant_id,
-                    "slug": _slug(project_name),
-                    "name": project_name,
-                    "site_name": site_name,
-                    "address": address,
-                    "created_at": timestamp,
-                },
-                on_conflict="tenant_id,slug",
-            )
+            .select("id, slug, name")
+            .eq("tenant_id", tenant_id)
+            .eq("slug", project_slug)
+            .limit(1)
             .execute()
-            .data[0]
+            .data
         )
+        if existing_project:
+            project = existing_project[0]
+        else:
+            project_id = create_id("prj")
+            project_payload = {
+                "id": project_id,
+                "tenant_id": tenant_id,
+                "slug": project_slug,
+                "name": project_name,
+                "site_name": site_name,
+                "address": address,
+                "created_at": timestamp,
+            }
+            try:
+                inserted_project = self.client.table("projects").insert(project_payload).execute().data
+            except Exception as exc:
+                if "23505" not in str(exc):
+                    raise
+                inserted_project = (
+                    self.client.table("projects")
+                    .select("id, slug, name")
+                    .eq("tenant_id", tenant_id)
+                    .eq("slug", project_slug)
+                    .limit(1)
+                    .execute()
+                    .data
+                )
+            project = inserted_project[0] if inserted_project else {
+                "id": project_id,
+                "slug": project_slug,
+                "name": project_name,
+            }
 
         document_payload = {
             "id": document_id,
@@ -1533,7 +1557,6 @@ class SupabaseRepository:
         remaining = self.client.table("documents").select("id").eq("tenant_id", tenant_id).eq("project_id", project_id).limit(1).execute().data
         if not remaining:
             self.client.table("predicted_inspections").delete().eq("tenant_id", tenant_id).eq("project_id", project_id).execute()
-            self.client.table("projects").delete().eq("tenant_id", tenant_id).eq("id", project_id).execute()
         return {"id": report_id, "storage_path": document.get("storage_path")}
 
     def get_issue(self, tenant_id: str, issue_id: str) -> dict | None:

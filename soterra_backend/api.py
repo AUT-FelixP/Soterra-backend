@@ -358,7 +358,14 @@ def create_app() -> FastAPI:
 
         assert start is not None
         if settings.process_inline:
-            report = ingestion_service.finish_ingest(start, upload_ctx)
+            try:
+                report = ingestion_service.finish_ingest(start, upload_ctx)
+            except Exception as exc:
+                deleted = repository.delete_report(tenant_id, start.document_id)
+                storage_path = (deleted or {}).get("storage_path") or getattr(start.stored_file, "storage_path", None)
+                if storage_path:
+                    storage.delete(storage_path=storage_path)
+                raise HTTPException(status_code=422, detail="Report extraction failed. The upload was not saved.") from exc
             return JSONResponse({"item": report, "isDuplicate": False}, status_code=201)
 
         # Async mode: return immediately and run extraction after the response.
