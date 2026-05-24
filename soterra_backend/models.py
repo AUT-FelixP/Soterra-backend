@@ -79,6 +79,28 @@ class RepositorySnapshot(StrictSchemaModel):
     predicted_inspections: list[dict]
 
 
+class AgentChatSession(StrictSchemaModel):
+    id: str
+    tenant_id: str
+    user_id: str
+    title: str | None = None
+    created_at: str
+    updated_at: str
+    deleted_at: str | None = None
+
+
+class AgentChatMessage(StrictSchemaModel):
+    id: str
+    session_id: str
+    tenant_id: str
+    user_id: str
+    role: Literal["user", "assistant", "tool"]
+    content: str
+    tool_name: str | None = None
+    tool_payload_json: str | None = None
+    created_at: str
+
+
 class IngestionOutcome(StrictSchemaModel):
     item: dict
     is_duplicate: bool = False

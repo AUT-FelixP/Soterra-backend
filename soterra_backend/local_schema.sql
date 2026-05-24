@@ -121,6 +121,33 @@ CREATE TABLE IF NOT EXISTS predicted_inspections (
   FOREIGN KEY(project_id) REFERENCES projects(id)
 );
 
+CREATE TABLE IF NOT EXISTS agent_chat_sessions (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  title TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  deleted_at TEXT,
+  FOREIGN KEY(tenant_id) REFERENCES tenants(id),
+  FOREIGN KEY(user_id) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS agent_chat_messages (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  tenant_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'tool')),
+  content TEXT NOT NULL,
+  tool_name TEXT,
+  tool_payload_json TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(session_id) REFERENCES agent_chat_sessions(id),
+  FOREIGN KEY(tenant_id) REFERENCES tenants(id),
+  FOREIGN KEY(user_id) REFERENCES users(id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_documents_project_date
   ON documents(tenant_id, project_id, report_date DESC);
 
@@ -159,6 +186,12 @@ CREATE INDEX IF NOT EXISTS idx_findings_status
 
 CREATE INDEX IF NOT EXISTS idx_predicted_inspections_date
   ON predicted_inspections(tenant_id, expected_date);
+
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_tenant_user_updated
+  ON agent_chat_sessions(tenant_id, user_id, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_agent_messages_session_created
+  ON agent_chat_messages(tenant_id, session_id, created_at ASC);
 
 CREATE VIEW IF NOT EXISTS analytics_report_summary_v AS
 SELECT

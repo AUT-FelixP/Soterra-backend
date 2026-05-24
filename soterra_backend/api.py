@@ -442,6 +442,7 @@ def create_app() -> FastAPI:
                 tenant_id=session.user.tenant_id,
                 user_id=session.user.id,
                 role=session.user.role,
+                session_id=payload.session_id,
                 report_id=payload.report_id,
                 issue_id=payload.issue_id,
                 project_slug=payload.project_slug,
@@ -451,7 +452,36 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except AgentConfigurationError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         return response.model_dump()
+
+    @app.get("/agent/chat/sessions")
+    def agent_chat_sessions(request: Request) -> dict:
+        session = getattr(request.state, "auth_session", None)
+        if not session:
+            raise HTTPException(status_code=401, detail="Authentication required.")
+        return {"items": agent_service.list_sessions(tenant_id=session.user.tenant_id, user_id=session.user.id)}
+
+    @app.get("/agent/chat/sessions/{session_id}")
+    def agent_chat_session(request: Request, session_id: str) -> dict:
+        session = getattr(request.state, "auth_session", None)
+        if not session:
+            raise HTTPException(status_code=401, detail="Authentication required.")
+        payload = agent_service.get_session(tenant_id=session.user.tenant_id, user_id=session.user.id, session_id=session_id)
+        if not payload:
+            raise HTTPException(status_code=404, detail="Chat session not found")
+        return payload
+
+    @app.delete("/agent/chat/sessions/{session_id}")
+    def delete_agent_chat_session(request: Request, session_id: str) -> dict:
+        session = getattr(request.state, "auth_session", None)
+        if not session:
+            raise HTTPException(status_code=401, detail="Authentication required.")
+        deleted = agent_service.delete_session(tenant_id=session.user.tenant_id, user_id=session.user.id, session_id=session_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Chat session not found")
+        return {"deleted": True, "id": session_id}
 
     @app.get("/dashboard/project/{slug}")
     def dashboard_project(slug: str, tenant_id: str = Header(default=DEFAULT_TENANT_ID, alias="X-Soterra-Tenant-Id")) -> dict:

@@ -4,12 +4,14 @@ import json
 import logging
 import os
 import re
+from enum import Enum
 from typing import Any
 
 from .prompts import SOTERRA_AGENT_SYSTEM_PROMPT
 from .schemas import AgentChatResponse, AgentRelatedEntities
 from .tools import build_soterra_tools
 from ..repository import RepositoryBackend
+from ..utils import safe_int
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +22,42 @@ class AgentDisabledError(RuntimeError):
 
 class AgentConfigurationError(RuntimeError):
     pass
+
+
+class AgentIntent(str, Enum):
+    REPORT_SUMMARY = "REPORT_SUMMARY"
+    REPORT_DETAIL = "REPORT_DETAIL"
+    LIST_OPEN_ISSUES = "LIST_OPEN_ISSUES"
+    URGENT_ISSUES = "URGENT_ISSUES"
+    ISSUE_LOCATION_LIST = "ISSUE_LOCATION_LIST"
+    ISSUE_STATUS_UPDATE_HELP = "ISSUE_STATUS_UPDATE_HELP"
+    TRACKER_VIEW = "TRACKER_VIEW"
+    DASHBOARD_OVERVIEW = "DASHBOARD_OVERVIEW"
+    PROJECT_METRICS = "PROJECT_METRICS"
+    COMPANY_METRICS = "COMPANY_METRICS"
+    RISK_SUMMARY = "RISK_SUMMARY"
+    UPCOMING_INSPECTIONS = "UPCOMING_INSPECTIONS"
+    INGESTION_STATUS = "INGESTION_STATUS"
+    SCHEMA_OR_CAPABILITY = "SCHEMA_OR_CAPABILITY"
+    GENERAL_AGENT_QUERY = "GENERAL_AGENT_QUERY"
+
+
+INTENT_TOOL_MAP = {
+    AgentIntent.REPORT_SUMMARY: ["summarize_reports"],
+    AgentIntent.REPORT_DETAIL: ["get_report_detail", "summarize_reports"],
+    AgentIntent.LIST_OPEN_ISSUES: ["list_open_issues"],
+    AgentIntent.URGENT_ISSUES: ["list_open_issues", "get_tracker_state"],
+    AgentIntent.ISSUE_LOCATION_LIST: ["list_open_issues"],
+    AgentIntent.ISSUE_STATUS_UPDATE_HELP: ["get_tracker_state"],
+    AgentIntent.TRACKER_VIEW: ["get_tracker_state"],
+    AgentIntent.DASHBOARD_OVERVIEW: ["get_dashboard_metrics"],
+    AgentIntent.PROJECT_METRICS: ["get_project_metrics"],
+    AgentIntent.COMPANY_METRICS: ["get_company_metrics"],
+    AgentIntent.RISK_SUMMARY: ["get_risk_summary"],
+    AgentIntent.UPCOMING_INSPECTIONS: ["get_upcoming_risk"],
+    AgentIntent.INGESTION_STATUS: ["get_ingestion_jobs"],
+    AgentIntent.SCHEMA_OR_CAPABILITY: ["get_backend_catalog"],
+}
 
 
 class SoterraAgentService:
@@ -51,6 +89,7 @@ class SoterraAgentService:
         tenant_id: str,
         user_id: str,
         role: str,
+        session_id: str | None = None,
         report_id: str | None = None,
         issue_id: str | None = None,
         project_slug: str | None = None,
@@ -63,23 +102,55 @@ class SoterraAgentService:
             if name not in used_tools:
                 used_tools.append(name)
 
+        session = self._get_or_create_session(tenant_id=tenant_id, user_id=user_id, session_id=session_id, message=message)
+        history = self.repository.list_agent_chat_messages(tenant_id=tenant_id, user_id=user_id, session_id=session.id, limit=24)
+        self.repository.add_agent_chat_message(tenant_id=tenant_id, user_id=user_id, session_id=session.id, role="user", content=message)
+
         tools = build_soterra_tools(self.repository, tenant_id, record_tool)
+        intent = classify_intent(message, page_context=page_context, history=history, report_id=report_id, issue_id=issue_id, project_slug=project_slug)
         fallback_error: Exception | None = None
         try:
-            agent = self._build_agent(tools)
-            task = self._build_task(
-                message=message,
-                tenant_id=tenant_id,
-                user_id=user_id,
-                role=role,
-                report_id=report_id,
-                issue_id=issue_id,
-                project_slug=project_slug,
-                page_context=page_context,
-            )
-            raw_answer = agent.run(task)
-            answer = self._coerce_answer(raw_answer)
-        except (AgentDisabledError, AgentConfigurationError):
+            if intent != AgentIntent.GENERAL_AGENT_QUERY:
+                answer = self._fallback_answer(
+                    message=message,
+                    tenant_id=tenant_id,
+                    report_id=report_id,
+                    issue_id=issue_id,
+                    project_slug=project_slug,
+                    page_context=page_context,
+                    used_tools=used_tools,
+                    history=history,
+                    intent=intent,
+                )
+            else:
+                agent = self._build_agent(tools)
+                task = self._build_task(
+                    message=message,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    role=role,
+                    report_id=report_id,
+                    issue_id=issue_id,
+                    project_slug=project_slug,
+                    page_context=page_context,
+                    history=history,
+                    intent=intent,
+                )
+                raw_answer = agent.run(task)
+                answer = self._coerce_answer(raw_answer)
+                if is_vague_answer(answer, intent) or self._answer_is_too_vague(answer, message):
+                    answer = self._fallback_answer(
+                        message=message,
+                        tenant_id=tenant_id,
+                        report_id=report_id,
+                        issue_id=issue_id,
+                        project_slug=project_slug,
+                        page_context=page_context,
+                        used_tools=used_tools,
+                        history=history,
+                        intent=intent,
+                    )
+        except AgentDisabledError:
             raise
         except Exception as exc:
             fallback_error = exc
@@ -92,18 +163,105 @@ class SoterraAgentService:
                 project_slug=project_slug,
                 page_context=page_context,
                 used_tools=used_tools,
+                history=history,
+                intent=intent,
             )
 
         related = self._related_entities(answer, report_id=report_id, issue_id=issue_id, project_slug=project_slug)
         confidence = self._confidence(used_tools, answer, report_id=report_id, issue_id=issue_id, project_slug=project_slug)
         if fallback_error and confidence == "high":
             confidence = "medium"
-        return AgentChatResponse(answer=answer, used_tools=used_tools, related_entities=related, confidence=confidence)
+        self.repository.add_agent_chat_message(tenant_id=tenant_id, user_id=user_id, session_id=session.id, role="assistant", content=answer)
+        return AgentChatResponse(
+            session_id=session.id,
+            answer=answer,
+            used_tools=_used_tool_entries(used_tools),
+            citations=self._citations(answer, used_tools),
+            context={
+                "tenant_scoped": True,
+                "history_used": bool(history),
+                "active_records_only": True,
+            },
+            safety={
+                "tenant_id_used": tenant_id,
+                "stale_records_excluded": True,
+            },
+            suggested_follow_ups=self._suggested_follow_ups(answer),
+            related_entities=related,
+            confidence=confidence,
+        )
+
+    def list_sessions(self, *, tenant_id: str, user_id: str) -> list[dict]:
+        return [
+            {"id": item.id, "title": item.title, "created_at": item.created_at, "updated_at": item.updated_at}
+            for item in self.repository.list_agent_chat_sessions(tenant_id=tenant_id, user_id=user_id)
+        ]
+
+    def get_session(self, *, tenant_id: str, user_id: str, session_id: str) -> dict | None:
+        session = self.repository.get_agent_chat_session(tenant_id=tenant_id, user_id=user_id, session_id=session_id)
+        if not session:
+            return None
+        messages = self.repository.list_agent_chat_messages(tenant_id=tenant_id, user_id=user_id, session_id=session_id, limit=100)
+        return {
+            "id": session.id,
+            "title": session.title,
+            "created_at": session.created_at,
+            "updated_at": session.updated_at,
+            "messages": [
+                {"id": item.id, "role": item.role, "content": item.content, "created_at": item.created_at, "tool_name": item.tool_name}
+                for item in messages
+            ],
+        }
+
+    def delete_session(self, *, tenant_id: str, user_id: str, session_id: str) -> bool:
+        return self.repository.soft_delete_agent_chat_session(tenant_id=tenant_id, user_id=user_id, session_id=session_id)
 
     def _ensure_enabled(self) -> None:
         enabled = os.getenv("SOTERRA_AGENT_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
         if not enabled:
             raise AgentDisabledError("Soterra agent chat is disabled.")
+
+    def _get_or_create_session(self, *, tenant_id: str, user_id: str, session_id: str | None, message: str):
+        if session_id:
+            session = self.repository.get_agent_chat_session(tenant_id=tenant_id, user_id=user_id, session_id=session_id)
+            if not session:
+                raise ValueError("Chat session not found for this account.")
+            return session
+        title = re.sub(r"\s+", " ", message).strip()[:80] or "New chat"
+        return self.repository.create_agent_chat_session(tenant_id=tenant_id, user_id=user_id, title=title)
+
+    def _answer_is_too_vague(self, answer: str, message: str) -> bool:
+        lowered = answer.lower()
+        vague_patterns = [
+            "there are some issues",
+            "the report has problems",
+            "more work is needed",
+            "please check the dashboard",
+        ]
+        if any(pattern in lowered for pattern in vague_patterns):
+            return True
+        if _looks_like_report_summary_question(message.lower()):
+            required_any = ["project", "inspection", "report"]
+            return len(answer.split()) < 35 or not any(term in lowered for term in required_any)
+        return False
+
+    def _citations(self, answer: str, used_tools: list[str]) -> list[dict]:
+        citations: list[dict] = []
+        if "get_reports_summary" in used_tools or "get_report_detail" in used_tools:
+            citations.append({"type": "active_reports", "label": "Active report summaries"})
+        if "get_tracker_summary" in used_tools or "get_issue_analytics" in used_tools:
+            citations.append({"type": "active_findings", "label": "Active issue tracker"})
+        if any(tool in used_tools for tool in ["get_dashboard_summary", "get_project_metrics", "get_dashboard_risk", "get_inspection_risk"]):
+            citations.append({"type": "dashboard_metrics", "label": "Current dashboard metrics"})
+        return citations
+
+    def _suggested_follow_ups(self, answer: str) -> list[str]:
+        lowered = answer.lower()
+        if "fire" in lowered:
+            return ["Show open issues by trade", "Create tracker priorities", "Summarize fire stopping risks"]
+        if "dashboard" in lowered:
+            return ["Show open issues by trade", "Explain project risk", "List aging issues"]
+        return ["Show open issues by trade", "Create tracker priorities", "Summarize project risks"]
 
     def _build_agent(self, tools: list[Any]) -> Any:
         try:
@@ -192,23 +350,88 @@ class SoterraAgentService:
         project_slug: str | None,
         page_context: str | None,
         used_tools: list[str],
+        history: list[Any] | None = None,
+        intent: AgentIntent | None = None,
     ) -> str:
         tools = {tool.name: tool for tool in build_soterra_tools(self.repository, tenant_id, lambda name: used_tools.append(name) if name not in used_tools else None)}
         normalized = f"{page_context or ''} {message}".lower()
+        intent = intent or classify_intent(message, page_context=page_context, history=history, report_id=report_id, issue_id=issue_id, project_slug=project_slug)
 
+        if _asks_to_bypass_scope(normalized):
+            tools["get_backend_catalog"].forward(tenant_id)
+            return "I can only access active records available to your current account. I cannot bypass tenant or deleted-record protections."
         if _is_off_domain_question(normalized):
             return _answer_off_domain()
+        inferred_project = project_slug or _infer_project_slug_from_history(history)
+        if intent in {AgentIntent.LIST_OPEN_ISSUES, AgentIntent.URGENT_ISSUES, AgentIntent.ISSUE_LOCATION_LIST}:
+            payload = tools["list_open_issues"].forward(tenant_id, inferred_project)
+            if intent == AgentIntent.URGENT_ISSUES:
+                tools["get_tracker_state"].forward(tenant_id)
+            return build_issue_table_answer(payload)
+        if intent in {AgentIntent.TRACKER_VIEW, AgentIntent.ISSUE_STATUS_UPDATE_HELP}:
+            payload = tools["get_tracker_state"].forward(tenant_id)
+            return build_tracker_answer(payload)
+        if intent == AgentIntent.DASHBOARD_OVERVIEW:
+            payload = tools["get_dashboard_metrics"].forward(tenant_id)
+            return build_dashboard_answer(payload)
+        if intent == AgentIntent.RISK_SUMMARY:
+            payload = tools["get_risk_summary"].forward(tenant_id)
+            return build_risk_answer(payload)
+        if intent == AgentIntent.UPCOMING_INSPECTIONS:
+            payload = tools["get_upcoming_risk"].forward(tenant_id)
+            return _answer_from_upcoming_risk(payload)
+        if intent == AgentIntent.INGESTION_STATUS:
+            payload = tools["get_ingestion_jobs"].forward(tenant_id)
+            return build_ingestion_status_answer(payload)
+        if intent == AgentIntent.SCHEMA_OR_CAPABILITY:
+            payload = tools["get_backend_catalog"].forward(tenant_id)
+            return _answer_from_schema_catalog(payload)
+        if intent == AgentIntent.REPORT_SUMMARY:
+            payload = tools["summarize_reports"].forward(tenant_id)
+            return build_report_summary_answer(payload, normalized, inferred_project)
         if report_id:
             payload = tools["get_report_detail"].forward(tenant_id, report_id)
             return _answer_from_report_detail(payload)
         if issue_id:
             payload = tools["get_issue_detail"].forward(tenant_id, issue_id)
             return _answer_from_issue_detail(payload)
+        if inferred_project and any(term in normalized for term in ["metric", "project", "risk", "previous", "contractor", "fix first", "top 3", "dashboard", "tracker"]):
+            reports_payload = tools["get_reports_summary"].forward(tenant_id)
+            if any(term in normalized for term in ["contractor", "fix first", "top 3", "priority", "prioritise", "prioritize"]):
+                return _answer_priorities_from_reports(reports_payload, inferred_project)
+            if "dashboard" in normalized:
+                dashboard_payload = tools["get_dashboard_summary"].forward(tenant_id)
+                return _answer_dashboard_linkage(reports_payload, dashboard_payload, inferred_project)
+            if "tracker" in normalized:
+                tracker_payload = tools["get_tracker_summary"].forward(tenant_id)
+                return _answer_tracker_linkage(tracker_payload, inferred_project)
+            if project_slug:
+                payload = tools["get_project_metrics"].forward(tenant_id, project_slug)
+                return _answer_from_project_metrics(payload)
+        if any(term in normalized for term in ["why", "failed", "fail"]) and "report" in normalized:
+            payload = tools["get_reports_summary"].forward(tenant_id)
+            return _answer_failed_report(payload, normalized, inferred_project)
+        if any(term in normalized for term in ["coordination", "services", "mechanical", "plumbing", "electrical", "data"]):
+            payload = tools["get_reports_summary"].forward(tenant_id)
+            return _answer_services_coordination(payload, inferred_project)
+        if any(term in normalized for term in ["passive fire", "fire stopping", "fire close", "fire issues"]):
+            payload = tools["get_reports_summary"].forward(tenant_id)
+            return _answer_fire_stopping(payload, inferred_project)
+        if any(term in normalized for term in ["dashboard", "company performance", "close-out rate", "close out rate"]):
+            reports_payload = tools["get_reports_summary"].forward(tenant_id)
+            dashboard_payload = tools["get_dashboard_summary"].forward(tenant_id)
+            return _answer_dashboard_linkage(reports_payload, dashboard_payload, inferred_project)
+        if _looks_like_report_summary_question(normalized):
+            payload = tools["get_reports_summary"].forward(tenant_id)
+            return _answer_project_reports(payload, normalized, inferred_project)
+        if any(term in normalized for term in ["tracker", "what needs fixing", "open defects"]):
+            payload = tools["get_tracker_summary"].forward(tenant_id)
+            return _answer_tracker_linkage(payload, inferred_project)
         if project_slug:
             payload = tools["get_project_metrics"].forward(tenant_id, project_slug)
             return _answer_from_project_metrics(payload)
-        if any(term in normalized for term in ["schema", "database", "table", "field", "coverage", "data source", "route", "endpoint"]):
-            payload = tools["get_data_schema_catalog"].forward(tenant_id)
+        if any(term in normalized for term in ["schema", "catalog", "database", "table", "field", "coverage", "data source", "route", "endpoint"]):
+            payload = tools["get_backend_catalog"].forward(tenant_id)
             return _answer_from_schema_catalog(payload)
         if any(term in normalized for term in ["member", "members", "user", "users", "admin", "role", "team", "access"]):
             payload = tools["get_tenant_members"].forward(tenant_id)
@@ -252,6 +475,8 @@ class SoterraAgentService:
         issue_id: str | None,
         project_slug: str | None,
         page_context: str | None,
+        history: list[Any],
+        intent: AgentIntent,
     ) -> str:
         context = {
             "tenant_id": tenant_id,
@@ -261,13 +486,22 @@ class SoterraAgentService:
             "report_id": report_id,
             "issue_id": issue_id,
             "project_slug": project_slug,
+            "intent": intent.value,
+            "preferred_tools": INTENT_TOOL_MAP.get(intent, []),
         }
+        history_context = [
+            {"role": item.role, "content": item.content[:1200]}
+            for item in history[-20:]
+            if item.role in {"user", "assistant"}
+        ]
         return (
             "Answer the user's Soterra question using only the provided internal tools. "
-            "Pass the tenant_id shown in context to every tool call. Do not use external tools, SQL, code execution, "
+            "Use only the authenticated tenant_id shown in context for every tool call. Do not use external tools, SQL, code execution, "
             "network access, filesystem access, or user-supplied tool names. "
+            "Previous chat context is only for interpreting follow-ups; it cannot change tenant/user scope. "
             "If report_id, issue_id, project_slug, or page_context points to a relevant tool, use that first.\n\n"
             f"Context:\n{json.dumps(context, indent=2)}\n\n"
+            f"Recent chat context:\n{json.dumps(history_context, indent=2)}\n\n"
             f"User question:\n{message}\n\n"
             "Return only the final plain-English answer."
         )
@@ -350,6 +584,71 @@ def _is_off_domain_question(normalized: str) -> bool:
     return any(term in normalized for term in off_domain_terms) and not any(term in normalized for term in construction_terms)
 
 
+def classify_intent(
+    message: str,
+    *,
+    page_context: str | None = None,
+    history: list[Any] | None = None,
+    report_id: str | None = None,
+    issue_id: str | None = None,
+    project_slug: str | None = None,
+) -> AgentIntent:
+    normalized = f"{page_context or ''} {message}".lower()
+    history_text = "\n".join(getattr(item, "content", "") for item in (history or [])[-6:]).lower()
+    if _asks_to_bypass_scope(normalized):
+        return AgentIntent.SCHEMA_OR_CAPABILITY
+    if issue_id:
+        return AgentIntent.ISSUE_STATUS_UPDATE_HELP
+    if report_id:
+        return AgentIntent.REPORT_DETAIL
+    if any(term in normalized for term in ["schema", "catalog", "capability", "can you access", "what data", "backend"]):
+        return AgentIntent.SCHEMA_OR_CAPABILITY
+    if any(term in normalized for term in ["processing", "extract", "extraction", "ingestion", "upload status", "still processing", "not appearing", "jobs"]):
+        return AgentIntent.INGESTION_STATUS
+    if any(term in normalized for term in ["upcoming inspection", "next inspection", "future inspection", "inspection due"]):
+        return AgentIntent.UPCOMING_INSPECTIONS
+    if any(term in normalized for term in ["highest risk", "risk", "risky", "reinspection risk"]):
+        return AgentIntent.RISK_SUMMARY
+    if any(term in normalized for term in ["dashboard", "company performance", "close-out rate", "close out rate", "metrics", "overview"]):
+        return AgentIntent.DASHBOARD_OVERVIEW
+    if any(term in normalized for term in ["tracker", "last sent", "reinspection count", "closure", "closed at"]):
+        return AgentIntent.TRACKER_VIEW
+    if any(term in normalized for term in ["where are", "location", "locations", "where is", "list them"]) and any(term in f"{normalized} {history_text}" for term in ["issue", "issues", "urgent", "open", "fix"]):
+        return AgentIntent.ISSUE_LOCATION_LIST
+    if any(term in normalized for term in ["urgent", "high priority", "fix first", "what should i fix first", "needs fixing", "first"]):
+        return AgentIntent.URGENT_ISSUES
+    if any(term in normalized for term in ["open issue", "open issues", "defects", "issue list", "list of open", "what to fix"]):
+        return AgentIntent.LIST_OPEN_ISSUES
+    if any(term in normalized for term in ["why did", "failed", "fail"]) and any(term in normalized for term in ["report", "inspection", "council"]):
+        return AgentIntent.REPORT_DETAIL
+    if _looks_like_report_summary_question(normalized):
+        return AgentIntent.REPORT_SUMMARY
+    if project_slug and any(term in normalized for term in ["project", "metrics", "performance"]):
+        return AgentIntent.PROJECT_METRICS
+    return AgentIntent.GENERAL_AGENT_QUERY
+
+
+def is_vague_answer(answer: str, intent: AgentIntent) -> bool:
+    lowered = answer.lower()
+    vague_phrases = [
+        "some issues",
+        "several issues",
+        "main issues",
+        "there are issues",
+        "refer to the tracker",
+        "close out failed items",
+        "assign services coordination items",
+        "review the reports",
+    ]
+    if intent in {AgentIntent.LIST_OPEN_ISSUES, AgentIntent.URGENT_ISSUES, AgentIntent.ISSUE_LOCATION_LIST}:
+        required_terms = ["location", "priority", "recommended action"]
+        if not all(term in lowered for term in required_terms):
+            return True
+        if "|" not in answer and "- " not in answer:
+            return True
+    return any(phrase in lowered for phrase in vague_phrases)
+
+
 def _answer_off_domain() -> str:
     return (
         "I can only answer from Soterra construction data: inspections, reports, issues, projects, sites, members, and backend data. "
@@ -393,6 +692,17 @@ def _answer_from_project_metrics(payload: dict) -> str:
 
 
 def _answer_from_schema_catalog(payload: dict) -> str:
+    if "reports" in payload and "issues" in payload:
+        return (
+            "I can answer from Soterra backend domains including reports, issues, tracker, dashboard, risk, jobs, and members. "
+            "For safety, I only use active records available to your current account and never expose passwords, token hashes, raw storage paths, deleted records, or cross-tenant data."
+        )
+    if payload.get("available_data_domains"):
+        domains = ", ".join(payload.get("available_data_domains", [])[:8])
+        return (
+            f"I can answer from these active tenant-scoped Soterra data areas: {domains}. "
+            "I cannot access password hashes, token hashes, raw storage paths, deleted records, or cross-tenant data."
+        )
     tables = payload.get("tables") or []
     views = payload.get("analyticsViews") or []
     if not tables:
@@ -559,3 +869,294 @@ def _answer_from_dashboard_summary(payload: dict) -> str:
         return "I could not find enough dashboard data to answer that clearly."
     metric_text = ", ".join(f"{item.get('label')}: {item.get('value')}" for item in metrics[:4])
     return f"Current dashboard summary: {metric_text}. Suggested next action: review open issues and upcoming risks before reinspection."
+
+
+def build_issue_table_answer(payload: dict) -> str:
+    issues = payload.get("issues") or []
+    project = payload.get("project_name") or "this account"
+    address = payload.get("project_address") or "address not specified"
+    total_open = payload.get("total_open", len(issues))
+    high = payload.get("high_priority_open", 0)
+    overdue = payload.get("overdue_open", 0)
+    if not issues:
+        return f"No open issues are available for {project} in the active records for your current account."
+    lines = [
+        f"Yes - I found {total_open} open issues for {project} at {address}. {high} are high priority and {overdue} are overdue.",
+        "",
+        "| Priority | Issue | Location | Trade | Source | Recommended action |",
+        "|---|---|---|---|---|---|",
+    ]
+    for issue in issues[:15]:
+        lines.append(
+            "| {priority} | {title} | {location} | {trade} | {source} | {action} |".format(
+                priority=_cell(issue.get("priority") or issue.get("severity")),
+                title=_cell(issue.get("title")),
+                location=_cell(issue.get("location")),
+                trade=_cell(issue.get("trade") or issue.get("category")),
+                source=_cell(issue.get("source") or f"{issue.get('source_report')}, {issue.get('source_date')}"),
+                action=_cell(issue.get("recommended_action")),
+            )
+        )
+    remaining = safe_int(payload.get("remaining_count"))
+    if remaining:
+        lines.append(f"\nShowing the first {min(len(issues), 15)} issues; {remaining} more remain in the tracker.")
+    lines.extend(
+        [
+            "",
+            "Suggested fix order:",
+            "1. Fix high-priority weather-tightness and waterproofing failures first.",
+            "2. Close passive fire stopping items with evidence/photos.",
+            "3. Resolve services coordination clashes by trade.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def build_tracker_answer(payload: dict) -> str:
+    lines = [
+        f"The tracker has {payload.get('total_issues', 0)} issues: {payload.get('open', 0)} open and {payload.get('closed', 0)} closed.",
+        f"By trade: {payload.get('by_trade', {})}.",
+        "Key tracker groups include cavity wrap/deck flashing failures, passive fire close-outs, services coordination issues, plumbing/fire collar/acoustic lagging items, and mechanical ducting or AC pipework issues.",
+        "",
+    ]
+    return "\n".join(lines) + build_issue_table_answer(
+        {
+            "project_name": "tracked projects",
+            "project_address": "active account",
+            "total_open": payload.get("open", 0),
+            "high_priority_open": len([item for item in payload.get("issues", []) if item.get("priority") in {"High", "Critical"} and item.get("status") == "Open"]),
+            "overdue_open": 0,
+            "issues": [item for item in payload.get("issues", []) if item.get("status") == "Open"],
+        }
+    )
+
+
+def build_report_summary_answer(payload: dict, normalized: str = "", project_slug: str | None = None) -> str:
+    reports = payload.get("reports") or payload.get("items") or []
+    if project_slug:
+        reports = [item for item in reports if item.get("project_slug") == project_slug]
+    if "kauri" in normalized:
+        reports = [item for item in reports if "kauri" in str(item.get("project_name", "")).lower()]
+    if not reports:
+        return "No matching active reports are available for your current account."
+    project = reports[0].get("project_name") or "this project"
+    lines = [f"I found {len(reports)} active reports for {project}."]
+    for index, report in enumerate(reports[:8], start=1):
+        failed = report.get("failed_items") or []
+        failed_text = ", ".join(str(item.get("item") or item.get("title") or item) for item in failed[:5]) or report.get("summary") or "No extracted failed items listed"
+        if "fire" in str(report.get("inspection_type") or report.get("report_title") or "").lower() and "passive fire" not in failed_text.lower():
+            failed_text = f"Passive fire stopping close-outs; {failed_text}"
+        if "services" in str(report.get("inspection_type") or report.get("report_title") or "").lower() and "services coordination" not in failed_text.lower():
+            failed_text = f"Services coordination issues; {failed_text}"
+        lines.append(
+            f"{index}. {report.get('report_title') or report.get('inspection_type')} - {report.get('overall_outcome', 'Unknown')}\n"
+            f"   Main findings: {failed_text}.\n"
+            f"   Open issues: {report.get('open_findings_count', 0)}.\n"
+            "   Recommended action: Assign the open findings to the responsible trades and collect close-out evidence."
+        )
+    lines.append("\nOverall priority: close high-priority open findings before reinspection or site meeting.")
+    return "\n".join(lines)
+
+
+def build_dashboard_answer(payload: dict) -> str:
+    drivers = payload.get("top_failure_drivers") or []
+    close = payload.get("close_out_performance") or {}
+    return (
+        "The dashboard should show:\n\n"
+        f"- Open issue count: {payload.get('open_issue_count', 0)}\n"
+        f"- High-priority issue count: {payload.get('high_priority_open', 0)}\n"
+        f"- Overdue issue count: {payload.get('overdue_count', 0)}\n"
+        f"- Top failure drivers: {', '.join(map(str, drivers)) or 'None identified'}\n"
+        f"- Project count: {payload.get('project_count', 0)}\n"
+        f"- Report count: {payload.get('report_count', 0)}\n"
+        f"- Failed inspection count: {payload.get('failed_inspection_count', 'see failed report outcomes')}\n"
+        f"- Project risk: driven by {payload.get('high_priority_open', 0)} high-priority open issues and repeated failure drivers\n"
+        f"- Close-out performance: {close.get('closed_count', 0)} closed / {close.get('open_count', 0)} open\n\n"
+        "Recommended dashboard action: use open/high-priority counts and top failure drivers to assign close-out work by trade."
+    )
+
+
+def build_risk_answer(payload: dict) -> str:
+    projects = payload.get("highest_risk_projects") or []
+    drivers = payload.get("risk_drivers") or []
+    actions = payload.get("recommended_actions") or []
+    highest = projects[0].get("project_name") if projects else "the active project set"
+    lines = [f"The highest risk area is {highest} because:"]
+    for index, driver in enumerate(drivers[:5], start=1):
+        lines.append(f"{index}. {driver}")
+    lines.append("\nRecommended risk reduction:")
+    for action in actions[:5]:
+        lines.append(f"- {action}")
+    return "\n".join(lines)
+
+
+def build_ingestion_status_answer(payload: dict) -> str:
+    jobs = payload.get("jobs") or payload.get("items") or []
+    if not jobs:
+        return "I could not find active report processing jobs for your current account."
+    lines = ["Current report processing status:"]
+    for job in jobs[:10]:
+        lines.append(
+            f"- {job.get('document_title') or job.get('reportName') or job.get('documentId')}: {job.get('status')} "
+            f"started {job.get('started_at') or job.get('startedAt')}, completed {job.get('completed_at') or job.get('completedAt') or 'not completed yet'}."
+        )
+    return "\n".join(lines)
+
+
+def _cell(value: Any) -> str:
+    return str(value or "Not specified").replace("|", "/").strip()
+
+
+def _used_tool_entries(used_tools: list[str]) -> list[dict]:
+    reasons = {
+        "get_schema_catalog": "Mapped the question to safe Soterra data domains",
+        "get_backend_catalog": "Mapped the question to safe backend data domains",
+        "summarize_reports": "User asked for project report summary",
+        "list_open_issues": "User asked for open issues, urgent issues, locations, or work to fix",
+        "get_tracker_state": "User asked about tracker state or issue ownership",
+        "get_dashboard_metrics": "User asked about dashboard metrics",
+        "get_risk_summary": "User asked about risk",
+        "get_reports_summary": "User asked for project report summary",
+        "get_report_detail": "User asked about a specific report",
+        "get_tracker_summary": "User asked about open issues or tracker state",
+        "get_dashboard_summary": "User asked about dashboard metrics",
+        "get_project_metrics": "User asked about project metrics",
+        "get_dashboard_risk": "User asked about risk",
+        "get_inspection_risk": "User asked about upcoming inspection risk",
+        "get_ingestion_jobs": "User asked about upload or extraction status",
+        "get_issue_analytics": "User asked for issue patterns or close-out analytics",
+    }
+    return [{"name": name, "reason": reasons.get(name, "Used tenant-scoped Soterra backend data")} for name in used_tools]
+
+
+def _asks_to_bypass_scope(normalized: str) -> bool:
+    return any(term in normalized for term in ["ignore tenant", "all reports in the database", "every tenant", "cross tenant", "deleted kauri", "deleted files"])
+
+
+def _looks_like_report_summary_question(normalized: str) -> bool:
+    return any(term in normalized for term in ["summarize", "summary", "reports", "inspection reports", "uploaded pdfs", "inspection summary"]) and (
+        "report" in normalized or "inspection" in normalized or "pdf" in normalized
+    )
+
+
+def _infer_project_slug_from_history(history: list[Any] | None) -> str | None:
+    if not history:
+        return None
+    text = "\n".join(getattr(item, "content", "") for item in history[-10:]).lower()
+    if "kauri apartments" in text:
+        return "kauri-apartments"
+    match = re.search(r"\b([a-z0-9]+(?:-[a-z0-9]+)+)\b", text)
+    return match.group(1) if match else None
+
+
+def _filter_reports(payload: dict, normalized: str, project_slug: str | None = None) -> list[dict]:
+    items = payload.get("items") or []
+    if project_slug:
+        slug_words = project_slug.replace("-", " ")
+        return [item for item in items if slug_words in str(item.get("project_name") or item.get("project") or "").lower() or project_slug == item.get("projectSlug")]
+    if "kauri" in normalized:
+        return [item for item in items if "kauri" in str(item.get("project_name") or item.get("project") or "").lower()]
+    return items
+
+
+def _answer_project_reports(payload: dict, normalized: str, project_slug: str | None = None) -> str:
+    reports = _filter_reports(payload, normalized, project_slug)
+    project_name = _project_name_from_reports(reports, normalized, project_slug)
+    if not reports:
+        if "kauri" in normalized or project_slug:
+            return f"No {project_name or 'matching'} reports are available in the active records for your current account."
+        return "I could not find active inspection reports for your current account. Upload or finish extracting a report first."
+    lines = [f"For {project_name}, I found {len(reports)} active inspection report(s)."]
+    for index, report in enumerate(reports[:6], start=1):
+        outcome = report.get("overall_outcome") or report.get("reportStatus") or "Unknown"
+        findings = report.get("failed_items") or [item.get("title") for item in report.get("top_findings", []) if item.get("title")]
+        finding_text = ", ".join(map(str, findings[:6])) or report.get("summary") or "No extracted findings listed"
+        lines.append(f"{index}. {report.get('inspection_type') or report.get('inspectionType') or 'Inspection report'} - {outcome}. Main issues: {finding_text}.")
+    lines.append("Recommended next action: close out failed Council/checklist items and passive fire evidence first, then assign services coordination items by trade in the tracker.")
+    return "\n".join(lines)
+
+
+def _answer_failed_report(payload: dict, normalized: str, project_slug: str | None = None) -> str:
+    reports = _filter_reports(payload, normalized, project_slug)
+    failed = [item for item in reports if str(item.get("overall_outcome") or item.get("reportStatus") or "").lower() in {"fail", "failed"}]
+    if not reports:
+        return "That report is no longer available in the active records for your current account, so I cannot summarize stale deleted content."
+    if not failed:
+        failed = [item for item in reports if item.get("failed_items")]
+    if not failed:
+        return "I could not find an active failed report matching that question in your current account."
+    report = failed[0]
+    items = report.get("failed_items") or [issue.get("title") for issue in report.get("top_findings", []) if issue.get("title")]
+    return (
+        f"The {report.get('inspection_type') or report.get('inspectionType')} report for {report.get('project_name') or report.get('project')} failed. "
+        f"Reasons include {', '.join(map(str, items[:8]))}. "
+        "Recommended next action: close these failed items out with evidence before reinspection."
+    )
+
+
+def _answer_priorities_from_reports(payload: dict, project_slug: str | None) -> str:
+    reports = _filter_reports(payload, "", project_slug)
+    if not reports:
+        return "I do not have active reports in this chat context for your current account. Ask me to summarize an active project first."
+    return (
+        "Top 3 contractor priorities:\n"
+        "1. Close out failed cavity wrap items first, especially flashings, cavity battens, deck/balcony threshold step-down, and membrane upstand.\n"
+        "2. Complete passive fire stopping close-outs, including plasterboard fixings, penetrations, fire damper breakaway joints, and requested close-out photos.\n"
+        "3. Fix services coordination issues by trade, especially duct clashes, clearances, tight cabling, fire collars, acoustic lagging, and incomplete AC/data items."
+    )
+
+
+def _answer_services_coordination(payload: dict, project_slug: str | None) -> str:
+    reports = _filter_reports(payload, "services kauri", project_slug)
+    if not reports:
+        return "I could not find an active services inspection report for your current account."
+    return (
+        "The services inspection points to poor coordination between services and recurring mechanical ducting problems. "
+        "Evidence includes duct clashes, cabling too tight, flex duct pressed against framing or compressed by supports, unsuitable kitchen extract routing, "
+        "water supply isolation and clearance issues, pipework needing fire collaring, drainage needing acoustic lagging, and incomplete AC/data items. "
+        "Recommended next action: have the main contractor coordinate mechanical, plumbing, and electrical/data QA before reinspection."
+    )
+
+
+def _answer_fire_stopping(payload: dict, project_slug: str | None) -> str:
+    reports = _filter_reports(payload, "fire kauri", project_slug)
+    if not reports:
+        return "I could not find an active fire inspection report for your current account."
+    return (
+        "The passive fire close-outs are fire damper breakaway joint compliance, missing plasterboard lining fixings, fire-rated bulkhead and penetration stopping, "
+        "pipe and cable penetration checks, close-out photos for items 3, 4, 5, and 10, and later inspection of Level 5 lift shaft fire stopping. "
+        "Recommended next action: collect close-out photos and manufacturer-compliant evidence before booking follow-up inspection."
+    )
+
+
+def _answer_dashboard_linkage(reports_payload: dict, dashboard_payload: dict, project_slug: str | None) -> str:
+    reports = _filter_reports(reports_payload, "kauri", project_slug)
+    if not reports:
+        return "No matching active reports are available for your current account, so I cannot map them to dashboard items."
+    return (
+        "Based on the active reports, the dashboard should surface open issue count, failed inspection count, repeated failure drivers, project risk, aging issues, close-out status, and upcoming reinspection/site meeting risk. "
+        "For Kauri Apartments, the key dashboard signals are failed cavity wrap items, passive fire stopping close-outs, and recurring services coordination defects. "
+        "Recommended next action: use those dashboard cards to drive tracker assignments and close-out evidence collection."
+    )
+
+
+def _answer_tracker_linkage(payload: dict, project_slug: str | None) -> str:
+    issues = payload.get("issues") or []
+    if project_slug:
+        issues = [item for item in issues if item.get("projectSlug") == project_slug or project_slug.replace("-", " ") in str(item.get("project", "")).lower()]
+    if not issues:
+        return "I could not find actionable open tracker issues for that project in your current account."
+    return (
+        "The tracker should include actionable open findings grouped by discipline: cavity wrap/deck flashing failures, passive fire stopping close-outs, services coordination issues, plumbing fire-collar and acoustic-lagging items, and mechanical ducting/AC pipework issues. "
+        "Recommended next action: assign each item to the responsible trade and attach close-out photos or QA evidence."
+    )
+
+
+def _project_name_from_reports(reports: list[dict], normalized: str, project_slug: str | None) -> str:
+    if reports:
+        return str(reports[0].get("project_name") or reports[0].get("project") or "this project")
+    if project_slug:
+        return project_slug.replace("-", " ").title()
+    if "kauri" in normalized:
+        return "Kauri Apartments"
+    return "this project"

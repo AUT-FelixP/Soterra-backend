@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Protocol
 
 from .config import Settings
-from .models import AuthSession, ExtractionResult, RepositorySnapshot, StoredFile, TenantUser
+from .models import AgentChatMessage, AgentChatSession, AuthSession, ExtractionResult, RepositorySnapshot, StoredFile, TenantUser
 from .utils import create_id, utc_now_iso
 
 _DEFAULT_TENANT_ID = "ten-default"
@@ -122,6 +122,34 @@ class RepositoryBackend(Protocol):
         reinspections: int | None = None,
         last_sent_to: str | None = None,
     ) -> dict | None:
+        ...
+
+    def create_agent_chat_session(self, *, tenant_id: str, user_id: str, title: str | None = None) -> AgentChatSession:
+        ...
+
+    def list_agent_chat_sessions(self, *, tenant_id: str, user_id: str, limit: int = 50) -> list[AgentChatSession]:
+        ...
+
+    def get_agent_chat_session(self, *, tenant_id: str, user_id: str, session_id: str) -> AgentChatSession | None:
+        ...
+
+    def soft_delete_agent_chat_session(self, *, tenant_id: str, user_id: str, session_id: str) -> bool:
+        ...
+
+    def list_agent_chat_messages(self, *, tenant_id: str, user_id: str, session_id: str, limit: int = 40) -> list[AgentChatMessage]:
+        ...
+
+    def add_agent_chat_message(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        session_id: str,
+        role: str,
+        content: str,
+        tool_name: str | None = None,
+        tool_payload_json: str | None = None,
+    ) -> AgentChatMessage:
         ...
 
 
@@ -746,6 +774,122 @@ class SqliteRepository:
             )
 
         return self.get_issue(tenant_id, issue_id)
+
+    def create_agent_chat_session(self, *, tenant_id: str, user_id: str, title: str | None = None) -> AgentChatSession:
+        timestamp = utc_now_iso()
+        session_id = create_id("acs")
+        clean_title = (title or "New chat").strip()[:120] or "New chat"
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO agent_chat_sessions (id, tenant_id, user_id, title, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (session_id, tenant_id, user_id, clean_title, timestamp, timestamp),
+            )
+        return AgentChatSession(id=session_id, tenant_id=tenant_id, user_id=user_id, title=clean_title, created_at=timestamp, updated_at=timestamp)
+
+    def list_agent_chat_sessions(self, *, tenant_id: str, user_id: str, limit: int = 50) -> list[AgentChatSession]:
+        capped = min(max(int(limit or 50), 1), 100)
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM agent_chat_sessions
+                WHERE tenant_id = ? AND user_id = ? AND deleted_at IS NULL
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (tenant_id, user_id, capped),
+            ).fetchall()
+        return [AgentChatSession(**_dict(row)) for row in rows]
+
+    def get_agent_chat_session(self, *, tenant_id: str, user_id: str, session_id: str) -> AgentChatSession | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM agent_chat_sessions
+                WHERE tenant_id = ? AND user_id = ? AND id = ? AND deleted_at IS NULL
+                """,
+                (tenant_id, user_id, session_id),
+            ).fetchone()
+        return AgentChatSession(**_dict(row)) if row else None
+
+    def soft_delete_agent_chat_session(self, *, tenant_id: str, user_id: str, session_id: str) -> bool:
+        timestamp = utc_now_iso()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE agent_chat_sessions
+                SET deleted_at = ?, updated_at = ?
+                WHERE tenant_id = ? AND user_id = ? AND id = ? AND deleted_at IS NULL
+                """,
+                (timestamp, timestamp, tenant_id, user_id, session_id),
+            )
+        return cursor.rowcount > 0
+
+    def list_agent_chat_messages(self, *, tenant_id: str, user_id: str, session_id: str, limit: int = 40) -> list[AgentChatMessage]:
+        capped = min(max(int(limit or 40), 1), 100)
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT m.*
+                FROM agent_chat_messages m
+                JOIN agent_chat_sessions s ON s.id = m.session_id
+                WHERE m.tenant_id = ? AND m.user_id = ? AND m.session_id = ?
+                  AND s.tenant_id = ? AND s.user_id = ? AND s.deleted_at IS NULL
+                ORDER BY m.created_at DESC
+                LIMIT ?
+                """,
+                (tenant_id, user_id, session_id, tenant_id, user_id, capped),
+            ).fetchall()
+        return [AgentChatMessage(**_dict(row)) for row in reversed(rows)]
+
+    def add_agent_chat_message(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        session_id: str,
+        role: str,
+        content: str,
+        tool_name: str | None = None,
+        tool_payload_json: str | None = None,
+    ) -> AgentChatMessage:
+        timestamp = utc_now_iso()
+        message_id = create_id("acm")
+        with self._connect() as connection:
+            session = connection.execute(
+                """
+                SELECT id FROM agent_chat_sessions
+                WHERE tenant_id = ? AND user_id = ? AND id = ? AND deleted_at IS NULL
+                """,
+                (tenant_id, user_id, session_id),
+            ).fetchone()
+            if not session:
+                raise ValueError("Chat session not found for this account.")
+            connection.execute(
+                """
+                INSERT INTO agent_chat_messages
+                  (id, session_id, tenant_id, user_id, role, content, tool_name, tool_payload_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (message_id, session_id, tenant_id, user_id, role, content, tool_name, tool_payload_json, timestamp),
+            )
+            connection.execute(
+                "UPDATE agent_chat_sessions SET updated_at = ? WHERE tenant_id = ? AND user_id = ? AND id = ?",
+                (timestamp, tenant_id, user_id, session_id),
+            )
+        return AgentChatMessage(
+            id=message_id,
+            session_id=session_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            role=role,  # type: ignore[arg-type]
+            content=content,
+            tool_name=tool_name,
+            tool_payload_json=tool_payload_json,
+            created_at=timestamp,
+        )
 
     @contextmanager
     def _connect(self) -> sqlite3.Connection:
@@ -1584,6 +1728,108 @@ class SupabaseRepository:
             self.client.table("findings").update(payload).eq("tenant_id", tenant_id).eq("id", issue_id).execute()
         return self.get_issue(tenant_id, issue_id)
 
+    def create_agent_chat_session(self, *, tenant_id: str, user_id: str, title: str | None = None) -> AgentChatSession:
+        timestamp = utc_now_iso()
+        payload = {
+            "id": create_id("acs"),
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "title": (title or "New chat").strip()[:120] or "New chat",
+            "created_at": timestamp,
+            "updated_at": timestamp,
+        }
+        self.client.table("agent_chat_sessions").insert(payload).execute()
+        return AgentChatSession(**payload)
+
+    def list_agent_chat_sessions(self, *, tenant_id: str, user_id: str, limit: int = 50) -> list[AgentChatSession]:
+        capped = min(max(int(limit or 50), 1), 100)
+        rows = (
+            self.client.table("agent_chat_sessions")
+            .select("*")
+            .eq("tenant_id", tenant_id)
+            .eq("user_id", user_id)
+            .is_("deleted_at", "null")
+            .order("updated_at", desc=True)
+            .limit(capped)
+            .execute()
+            .data
+        )
+        return [AgentChatSession(**row) for row in rows]
+
+    def get_agent_chat_session(self, *, tenant_id: str, user_id: str, session_id: str) -> AgentChatSession | None:
+        rows = (
+            self.client.table("agent_chat_sessions")
+            .select("*")
+            .eq("tenant_id", tenant_id)
+            .eq("user_id", user_id)
+            .eq("id", session_id)
+            .is_("deleted_at", "null")
+            .limit(1)
+            .execute()
+            .data
+        )
+        return AgentChatSession(**rows[0]) if rows else None
+
+    def soft_delete_agent_chat_session(self, *, tenant_id: str, user_id: str, session_id: str) -> bool:
+        timestamp = utc_now_iso()
+        result = (
+            self.client.table("agent_chat_sessions")
+            .update({"deleted_at": timestamp, "updated_at": timestamp})
+            .eq("tenant_id", tenant_id)
+            .eq("user_id", user_id)
+            .eq("id", session_id)
+            .is_("deleted_at", "null")
+            .execute()
+            .data
+        )
+        return bool(result)
+
+    def list_agent_chat_messages(self, *, tenant_id: str, user_id: str, session_id: str, limit: int = 40) -> list[AgentChatMessage]:
+        if not self.get_agent_chat_session(tenant_id=tenant_id, user_id=user_id, session_id=session_id):
+            return []
+        capped = min(max(int(limit or 40), 1), 100)
+        rows = (
+            self.client.table("agent_chat_messages")
+            .select("*")
+            .eq("tenant_id", tenant_id)
+            .eq("user_id", user_id)
+            .eq("session_id", session_id)
+            .order("created_at", desc=True)
+            .limit(capped)
+            .execute()
+            .data
+        )
+        return [AgentChatMessage(**_normalize_agent_message_row(row)) for row in reversed(rows)]
+
+    def add_agent_chat_message(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        session_id: str,
+        role: str,
+        content: str,
+        tool_name: str | None = None,
+        tool_payload_json: str | None = None,
+    ) -> AgentChatMessage:
+        if not self.get_agent_chat_session(tenant_id=tenant_id, user_id=user_id, session_id=session_id):
+            raise ValueError("Chat session not found for this account.")
+        timestamp = utc_now_iso()
+        payload = {
+            "id": create_id("acm"),
+            "session_id": session_id,
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "role": role,
+            "content": content,
+            "tool_name": tool_name,
+            "tool_payload_json": tool_payload_json,
+            "created_at": timestamp,
+        }
+        self.client.table("agent_chat_messages").insert(payload).execute()
+        self.client.table("agent_chat_sessions").update({"updated_at": timestamp}).eq("tenant_id", tenant_id).eq("user_id", user_id).eq("id", session_id).execute()
+        return AgentChatMessage(**_normalize_agent_message_row(payload))
+
 
 def build_repository(settings: Settings) -> RepositoryBackend:
     if settings.repository_mode == "supabase":
@@ -1656,6 +1902,14 @@ ORDER BY pi.expected_date ASC
 
 def _dict(row: sqlite3.Row) -> dict:
     return {key: row[key] for key in row.keys()}
+
+
+def _normalize_agent_message_row(row: dict) -> dict:
+    payload = dict(row)
+    tool_payload = payload.get("tool_payload_json")
+    if tool_payload is not None and not isinstance(tool_payload, str):
+        payload["tool_payload_json"] = json.dumps(tool_payload)
+    return payload
 
 
 def _normalize_email(email: str) -> str:

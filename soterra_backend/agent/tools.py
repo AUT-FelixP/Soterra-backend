@@ -19,6 +19,7 @@ from ..analytics import (
     build_report_detail,
     build_report_list,
 )
+from ..models import RepositorySnapshot
 from ..repository import RepositoryBackend
 from ..utils import safe_int
 
@@ -41,11 +42,18 @@ ToolRecorder = Callable[[str], None]
 def build_soterra_tools(repository: RepositoryBackend, tenant_id: str, recorder: ToolRecorder | None = None) -> list[Tool]:
     return [
         ApiRouteCatalogTool(repository, tenant_id, recorder),
+        SchemaCatalogTool(repository, tenant_id, recorder),
+        BackendCatalogTool(repository, tenant_id, recorder),
         DataSchemaCatalogTool(repository, tenant_id, recorder),
         TenantMembersTool(repository, tenant_id, recorder),
         ProjectCatalogTool(repository, tenant_id, recorder),
         IngestionJobsTool(repository, tenant_id, recorder),
         IssueAnalyticsTool(repository, tenant_id, recorder),
+        SummarizeReportsTool(repository, tenant_id, recorder),
+        ListOpenIssuesTool(repository, tenant_id, recorder),
+        TrackerStateTool(repository, tenant_id, recorder),
+        DashboardMetricsTool(repository, tenant_id, recorder),
+        RiskSummaryTool(repository, tenant_id, recorder),
         ReportsSummaryTool(repository, tenant_id, recorder),
         ReportDetailTool(repository, tenant_id, recorder),
         TrackerSummaryTool(repository, tenant_id, recorder),
@@ -85,7 +93,95 @@ class SoterraTenantTool(Tool):
         return None
 
     def _snapshot(self):
-        return self.repository.load_snapshot(self.tenant_id)
+        return _active_snapshot(self.repository.load_snapshot(self.tenant_id))
+
+
+class SchemaCatalogTool(SoterraTenantTool):
+    name = "get_schema_catalog"
+    description = "Return the safe Soterra agent data catalogue, available data domains, safe tools, and forbidden data. Use to understand what backend data the agent can query."
+
+    def forward(self, tenant_id: str) -> dict:
+        if mismatch := self._check_tenant(tenant_id):
+            return mismatch
+        self._record()
+        return {
+            "available_data_domains": [
+                "reports",
+                "documents",
+                "projects",
+                "findings",
+                "jobs",
+                "tracker",
+                "dashboard",
+                "company_metrics",
+                "project_metrics",
+                "inspection_risk",
+                "top_failure_drivers",
+                "upcoming_risk",
+            ],
+            "safe_tools": [
+                "summarize_reports",
+                "get_report_detail",
+                "summarize_issues",
+                "get_tracker_state",
+                "get_dashboard_metrics",
+                "get_project_metrics",
+                "get_risk_summary",
+                "get_ingestion_jobs",
+            ],
+            "forbidden_data": [
+                "password_hash",
+                "token_hash",
+                "reset_token_hash",
+                "raw_storage_path",
+                "cross_tenant_data",
+            ],
+            "tenant_scope": "current authenticated tenant and user only",
+            "active_records_only": True,
+        }
+
+
+class BackendCatalogTool(SoterraTenantTool):
+    name = "get_backend_catalog"
+    description = "Return the static Soterra backend data-domain catalog. Use to choose between reports, issues, tracker, dashboard, risk, jobs, and members tools."
+
+    def forward(self, tenant_id: str) -> dict:
+        if mismatch := self._check_tenant(tenant_id):
+            return mismatch
+        self._record()
+        return {
+            "reports": {
+                "routes": ["GET /reports", "GET /reports/{report_id}", "DELETE /reports/{report_id}"],
+                "tables": ["documents", "projects", "findings", "jobs"],
+                "use_for": ["uploaded reports", "inspection summaries", "report detail", "failed checklist items", "source document questions"],
+            },
+            "issues": {
+                "routes": ["GET /issues", "GET /issues/{issue_id}", "PATCH /issues/{issue_id}"],
+                "tables": ["findings", "documents", "projects"],
+                "use_for": ["open issues", "urgent issues", "defects", "what needs fixing", "issue location", "issue status", "close-out actions"],
+            },
+            "tracker": {
+                "routes": ["GET /tracker", "GET /tracker/{issue_id}", "PATCH /tracker/{issue_id}"],
+                "tables": ["findings"],
+                "use_for": ["field work list", "issue owner/trade", "reinspection count", "last sent to", "open/closed tracker state"],
+            },
+            "dashboard": {
+                "routes": ["GET /dashboard", "GET /dashboard/company", "GET /dashboard/performance", "GET /dashboard/insights", "GET /dashboard/project/{slug}", "GET /dashboard/top-failures", "GET /dashboard/live-tracker"],
+                "source": "analytics.py + RepositorySnapshot",
+                "use_for": ["company overview", "project performance", "top failure drivers", "close-out rate", "aging issues", "summary metrics"],
+            },
+            "risk": {
+                "routes": ["GET /dashboard/risk", "GET /dashboard/upcoming-risk", "GET /inspection-risk"],
+                "tables": ["predicted_inspections", "findings", "documents", "projects"],
+                "use_for": ["upcoming inspection risk", "highest risk project", "reinspection risk", "future inspections"],
+            },
+            "jobs": {"tables": ["jobs", "documents"], "use_for": ["extraction status", "failed ingestion", "processing state", "why a report is not appearing"]},
+            "members": {
+                "routes": ["GET /tenants/members", "POST /tenants/members", "DELETE /tenants/members/{user_id}"],
+                "use_for": ["team members", "tenant users", "admin/member roles"],
+                "restrictions": ["Do not expose secrets", "Do not expose password hashes", "Do not expose token hashes"],
+            },
+        }
 
 
 class ApiRouteCatalogTool(SoterraTenantTool):
@@ -120,6 +216,8 @@ class ApiRouteCatalogTool(SoterraTenantTool):
                 {"route": "Issue analytics over /issues, /reports, /inspection-risk", "tool": "get_issue_analytics", "returns": "Top sites/categories, open work to fix this week, closed project issues, passed sites, reinspection root causes."},
                 {"route": "GET /auth/session", "tool": "get_tenant_members plus request context", "returns": "Authenticated user's tenant/user identity and role. The agent receives this in task context."},
                 {"route": "GET /agent/chat/status", "tool": "agent service status", "returns": "Whether chat is enabled/configured and model/provider metadata."},
+                {"route": "GET /agent/chat/sessions", "tool": "chat history repository", "returns": "Current user's active agent chat sessions for this tenant."},
+                {"route": "GET /agent/chat/sessions/{session_id}", "tool": "chat history repository", "returns": "Current user's tenant-scoped chat session and messages."},
                 {"route": "GET /health", "tool": "not needed for data answers", "returns": "Public service health status only."},
             ],
             "mutationRoutes": [
@@ -136,6 +234,7 @@ class ApiRouteCatalogTool(SoterraTenantTool):
                 "PATCH /issues/{issue_id}",
                 "PATCH /tracker/{issue_id}",
                 "POST /agent/chat",
+                "DELETE /agent/chat/sessions/{session_id}",
             ],
             "note": "The chat agent answers questions from read tools only. It does not mutate auth, members, reports, or issues.",
         }
@@ -192,8 +291,8 @@ class DataSchemaCatalogTool(SoterraTenantTool):
                 {
                     "table": "documents",
                     "purpose": "Uploaded inspection reports and extracted report metadata.",
-                    "safeFields": ["id", "project_id", "site_name", "source_filename", "download_url", "inspection_type", "trade", "inspector", "report_date", "status", "summary", "units", "uploaded_at"],
-                    "blockedFields": ["storage_path", "file_hash", "file_tag unless needed for duplicate support"],
+                    "safeFields": ["id", "project_id", "site_name", "source_filename", "inspection_type", "trade", "inspector", "report_date", "status", "summary", "units", "uploaded_at"],
+                    "blockedFields": ["storage_path", "download_url", "file_hash", "file_tag unless needed for duplicate support"],
                     "coveredBy": ["GET /reports", "GET /reports/{report_id}", "get_reports_summary", "get_report_detail"],
                     "tenantRowCount": len(snapshot.documents),
                 },
@@ -311,22 +410,30 @@ class IngestionJobsTool(SoterraTenantTool):
                 normalized_status = status.strip().lower()
                 jobs = [item for item in jobs if str(item.get("status", "")).lower() == normalized_status]
             capped = min(max(safe_int(limit), 1), 50)
-            return {
-                "items": [
+            jobs_payload = [
                     {
+                        "job_id": item.get("id"),
                         "id": item.get("id"),
                         "documentId": item.get("document_id"),
+                        "document_id": item.get("document_id"),
+                        "document_title": documents.get(item.get("document_id"), {}).get("source_filename"),
                         "reportName": documents.get(item.get("document_id"), {}).get("source_filename"),
                         "project": documents.get(item.get("document_id"), {}).get("project_name"),
                         "status": item.get("status"),
                         "extractor": item.get("extractor"),
+                        "error": item.get("error_message"),
                         "errorMessage": item.get("error_message"),
                         "rawTextExcerpt": (item.get("raw_text_excerpt") or "")[:700],
+                        "started_at": item.get("started_at"),
+                        "completed_at": item.get("completed_at"),
                         "startedAt": item.get("started_at"),
                         "completedAt": item.get("completed_at"),
                     }
                     for item in jobs[:capped]
-                ],
+                ]
+            return {
+                "jobs": jobs_payload,
+                "items": jobs_payload,
                 "count": len(jobs),
                 "statusBreakdown": dict(Counter(item.get("status", "unknown") for item in snapshot.jobs)),
             }
@@ -402,6 +509,168 @@ class IssueAnalyticsTool(SoterraTenantTool):
             return {"topSitesByIssueCount": [], "categoryBreakdown": [], "openHighPriorityThisWeek": [], "error": "Issue analytics could not be loaded."}
 
 
+class SummarizeReportsTool(SoterraTenantTool):
+    name = "summarize_reports"
+    description = "Return active report summaries with project, outcome, failed items, and open/high-priority finding counts."
+    inputs = {
+        **SoterraTenantTool.inputs,
+        "limit": {"type": "integer", "description": "Maximum number of reports to return, capped at 50.", "nullable": True},
+    }
+
+    def forward(self, tenant_id: str, limit: int = 20) -> dict:
+        if mismatch := self._check_tenant(tenant_id):
+            return mismatch
+        self._record()
+        snapshot = self._snapshot()
+        capped = min(max(safe_int(limit), 1), 50)
+        findings_by_doc: dict[str, list[dict]] = {}
+        for finding in snapshot.findings:
+            findings_by_doc.setdefault(str(finding.get("document_id")), []).append(finding)
+        reports = []
+        for document in snapshot.documents[:capped]:
+            findings = findings_by_doc.get(str(document.get("id")), [])
+            open_findings = [item for item in findings if item.get("status") == "Open"]
+            high = [item for item in open_findings if item.get("severity") in {"High", "Critical"}]
+            reports.append(
+                {
+                    "report_id": document.get("id"),
+                    "document_id": document.get("id"),
+                    "project_id": document.get("project_id"),
+                    "project_name": document.get("project_name"),
+                    "project_slug": document.get("project_slug"),
+                    "project_address": document.get("address"),
+                    "report_title": _report_title(document),
+                    "inspection_type": document.get("inspection_type"),
+                    "report_date": document.get("report_date"),
+                    "overall_outcome": document.get("status") or "Unknown",
+                    "summary": document.get("summary"),
+                    "failed_items": [_issue_payload(item, document) for item in open_findings[:12]],
+                    "open_findings_count": len(open_findings),
+                    "high_priority_count": len(high),
+                    "source_status": {"active_document": True, "deleted_at": None},
+                }
+            )
+        return {"total_reports": len(snapshot.documents), "reports": reports, "items": reports, "count": len(snapshot.documents)}
+
+
+class ListOpenIssuesTool(SoterraTenantTool):
+    name = "list_open_issues"
+    description = "Return active open issues with location, priority, trade, source report/date, and recommended action. Use for urgent issues, what to fix, issue locations, and tracker work lists."
+    inputs = {
+        **SoterraTenantTool.inputs,
+        "project_slug": {"type": "string", "description": "Optional project slug filter.", "nullable": True},
+        "limit": {"type": "integer", "description": "Maximum number of issues to return, capped at 50.", "nullable": True},
+    }
+
+    def forward(self, tenant_id: str, project_slug: str | None = None, limit: int = 50) -> dict:
+        if mismatch := self._check_tenant(tenant_id):
+            return mismatch
+        self._record()
+        snapshot = self._snapshot()
+        docs = {item.get("id"): item for item in snapshot.documents}
+        open_findings = [item for item in snapshot.findings if item.get("status") == "Open"]
+        if project_slug:
+            open_findings = [item for item in open_findings if item.get("project_slug") == project_slug]
+        capped = min(max(safe_int(limit), 1), 50)
+        issues = [_issue_payload(item, docs.get(item.get("document_id"), {})) for item in sorted(open_findings, key=_priority_rank)[:capped]]
+        project = _dominant_project(open_findings, snapshot.projects)
+        high = [item for item in open_findings if item.get("severity") in {"High", "Critical"}]
+        overdue = [item for item in open_findings if _days_open(item) > 7]
+        return {
+            "project_name": project.get("name") or (issues[0].get("project_name") if issues else None),
+            "project_slug": project.get("slug") or (issues[0].get("project_slug") if issues else None),
+            "project_address": project.get("address") or _first_value(docs.values(), "address"),
+            "total_open": len(open_findings),
+            "high_priority_open": len(high),
+            "overdue_open": len(overdue),
+            "issues": issues,
+            "remaining_count": max(0, len(open_findings) - len(issues)),
+        }
+
+
+class TrackerStateTool(SoterraTenantTool):
+    name = "get_tracker_state"
+    description = "Return tracker state with issue ownership, status, reinspections, last sent to, closure state, location, and trade."
+
+    def forward(self, tenant_id: str) -> dict:
+        if mismatch := self._check_tenant(tenant_id):
+            return mismatch
+        self._record()
+        snapshot = self._snapshot()
+        docs = {item.get("id"): item for item in snapshot.documents}
+        issues = [_issue_payload(item, docs.get(item.get("document_id"), {})) | {
+            "reinspections": safe_int(item.get("reinspections")),
+            "last_sent_to": item.get("last_sent_to"),
+            "closed_at": item.get("closed_at"),
+        } for item in sorted(snapshot.findings, key=_priority_rank)]
+        return {
+            "total_issues": len(snapshot.findings),
+            "open": len([item for item in snapshot.findings if item.get("status") == "Open"]),
+            "closed": len([item for item in snapshot.findings if item.get("status") == "Closed"]),
+            "by_status": dict(Counter(item.get("status", "Unknown") for item in snapshot.findings)),
+            "by_trade": dict(Counter(item.get("trade", "General") for item in snapshot.findings)),
+            "issues": issues[:50],
+        }
+
+
+class DashboardMetricsTool(SoterraTenantTool):
+    name = "get_dashboard_metrics"
+    description = "Return dashboard overview metrics, open/high-priority issue counts, top failure drivers, and close-out performance."
+
+    def forward(self, tenant_id: str) -> dict:
+        if mismatch := self._check_tenant(tenant_id):
+            return mismatch
+        self._record()
+        snapshot = self._snapshot()
+        open_findings = [item for item in snapshot.findings if item.get("status") == "Open"]
+        high = [item for item in open_findings if item.get("severity") in {"High", "Critical"}]
+        overdue = [item for item in open_findings if _days_open(item) > 7]
+        closed = [item for item in snapshot.findings if item.get("status") == "Closed"]
+        drivers = [item.get("issue") for item in build_dashboard_top_failures(snapshot, "All types").get("drivers", []) if item.get("issue")]
+        if not drivers:
+            drivers = [item for item, _count in Counter(finding.get("category", "General") for finding in snapshot.findings).most_common(5)]
+        return {
+            "project_count": len(snapshot.projects),
+            "report_count": len(snapshot.documents),
+            "open_issue_count": len(open_findings),
+            "high_priority_open": len(high),
+            "overdue_count": len(overdue),
+            "top_failure_drivers": drivers[:5],
+            "close_out_performance": {
+                "closed_count": len(closed),
+                "open_count": len(open_findings),
+                "average_age_days": None,
+            },
+        }
+
+
+class RiskSummaryTool(SoterraTenantTool):
+    name = "get_risk_summary"
+    description = "Return highest-risk projects, risk drivers, and recommended risk-reduction actions."
+
+    def forward(self, tenant_id: str) -> dict:
+        if mismatch := self._check_tenant(tenant_id):
+            return mismatch
+        self._record()
+        snapshot = self._snapshot()
+        by_project = Counter(item.get("project_name", "Unknown project") for item in snapshot.findings if item.get("status") == "Open")
+        highest = [{"project_name": name, "open_issue_count": count} for name, count in by_project.most_common(5)]
+        categories = [name for name, _ in Counter(item.get("category", "General") for item in snapshot.findings if item.get("status") == "Open").most_common(5)]
+        drivers = []
+        if highest:
+            drivers.append("High number of open high-priority issues")
+        drivers.extend(categories)
+        return {
+            "highest_risk_projects": highest,
+            "risk_drivers": drivers,
+            "recommended_actions": [
+                "Close high-priority weather-tightness and life-safety items first.",
+                "Collect close-out evidence before reinspection.",
+                "Assign recurring services coordination issues by trade.",
+            ],
+        }
+
+
 class ReportsSummaryTool(SoterraTenantTool):
     name = "get_reports_summary"
     description = "Return a compact list of reports for the current tenant. Use for report list, recent inspections, status, project, and report risk overview questions."
@@ -418,13 +687,26 @@ class ReportsSummaryTool(SoterraTenantTool):
             items = build_report_list(self._snapshot()).get("items", [])
             compact = [
                 {
+                    "report_id": item.get("id"),
+                    "document_id": item.get("id"),
+                    "project_name": item.get("project"),
+                    "report_title": item.get("title") or item.get("sourceFilename") or item.get("inspectionType"),
+                    "inspection_type": item.get("inspectionType"),
+                    "report_date": item.get("createdAt"),
+                    "status": "active",
+                    "overall_outcome": item.get("overallOutcome") or item.get("status") or "Unknown",
+                    "summary": item.get("summary"),
+                    "failed_items": _failed_items(item.get("issues") or []),
+                    "open_findings_count": len([issue for issue in item.get("issues") or [] if issue.get("status") == "Open"]),
+                    "closed_findings_count": len([issue for issue in item.get("issues") or [] if issue.get("status") == "Closed"]),
+                    "top_findings": _compact_issues(item.get("issues") or [], limit=8),
+                    "source": {"active_document": True, "deleted_at": None},
                     "id": item.get("id"),
                     "project": item.get("project"),
                     "site": item.get("site"),
                     "date": item.get("createdAt"),
-                    "status": item.get("status"),
+                    "reportStatus": item.get("status"),
                     "inspectionType": item.get("inspectionType"),
-                    "summary": item.get("summary"),
                     "issueCount": len(item.get("issues") or []),
                     "highestSeverity": _highest_severity(item.get("issues") or []),
                 }
@@ -467,13 +749,26 @@ class ReportDetailTool(SoterraTenantTool):
             return {
                 "found": True,
                 "item": {
+                    "report_id": item.get("id"),
+                    "document_id": item.get("id"),
+                    "project_name": item.get("project"),
+                    "report_title": item.get("title") or item.get("inspectionType"),
+                    "inspection_type": item.get("inspectionType"),
+                    "report_date": item.get("createdAt"),
+                    "status": "active",
+                    "overall_outcome": item.get("overallOutcome") or item.get("status") or "Unknown",
+                    "summary": item.get("summary"),
+                    "failed_items": _failed_items(item.get("issues") or []),
+                    "open_findings_count": len([issue for issue in item.get("issues") or [] if issue.get("status") == "Open"]),
+                    "closed_findings_count": len([issue for issue in item.get("issues") or [] if issue.get("status") == "Closed"]),
+                    "top_findings": _compact_issues(item.get("issues") or [], limit=12),
+                    "source": {"active_document": True, "deleted_at": None},
                     "id": item.get("id"),
                     "project": item.get("project"),
                     "site": item.get("site"),
                     "date": item.get("createdAt"),
-                    "status": item.get("status"),
+                    "reportStatus": item.get("status"),
                     "inspectionType": item.get("inspectionType"),
-                    "summary": item.get("summary"),
                     "issues": _compact_issues(item.get("issues") or [], limit=12),
                     "predictedInspections": predictions,
                     "safeTextExcerpt": (item.get("summary") or "")[:700],
@@ -837,6 +1132,116 @@ def _compact_findings(findings: list[dict]) -> list[dict]:
     ]
 
 
+def _issue_payload(item: dict, document: dict) -> dict:
+    title = str(item.get("title") or item.get("description") or "Open issue")
+    source_title = _report_title(document)
+    report_date = str(document.get("report_date") or item.get("created_at") or "")[:10]
+    return {
+        "issue_id": item.get("id"),
+        "id": item.get("id"),
+        "title": title,
+        "status": item.get("status") or "Open",
+        "priority": item.get("severity") or "Medium",
+        "severity": item.get("severity") or "Medium",
+        "trade": item.get("trade") or item.get("category") or "General",
+        "category": item.get("category") or "General",
+        "location": _normalise_location(item, document),
+        "project_name": item.get("project_name") or document.get("project_name"),
+        "project_slug": item.get("project_slug") or document.get("project_slug"),
+        "source_report": source_title,
+        "source_date": report_date,
+        "source": f"{source_title}, {_format_date(report_date)}" if report_date else source_title,
+        "recommended_action": _recommended_action(title, item),
+        "linkedReport": item.get("document_id"),
+    }
+
+
+def _normalise_location(item: dict, document: dict) -> str:
+    unit = item.get("unit_label")
+    location = item.get("location")
+    if unit and location:
+        return f"{unit} / {location}"
+    if location:
+        return str(location)
+    if unit:
+        return str(unit)
+    text = f"{item.get('title', '')} {item.get('description', '')}".lower()
+    inspection = str(document.get("inspection_type") or item.get("inspection_type") or "").lower()
+    if "flash" in text or "cavity" in text:
+        return "Level 1 apartments / junction and cavity wall areas"
+    if "deck" in text or "balcony" in text or "membrane" in text:
+        return "Level 1 deck/balcony areas"
+    if "damper" in text:
+        return "Level 1 corridor / fire damper locations"
+    if "plasterboard" in text:
+        return "Level 1 corridor / plasterboard linings"
+    if "lift" in text:
+        return "Level 5 lift shaft / lift door frame area"
+    if "riser" in text or "collar" in text:
+        return "Fire-rated risers"
+    if "duct" in text or "cabling" in text or "mechanical" in inspection:
+        return "Level 3 mechanical/services area"
+    if "drainage" in text or "hydraulic" in text or "plumbing" in inspection:
+        return "Level 3 hydraulics/drainage areas"
+    if document.get("units"):
+        return f"{', '.join(map(str, document.get('units')[:3]))} / exact location not specified"
+    if "cavity" in inspection:
+        return "Level 1 apartments"
+    if "fire" in inspection:
+        return "Passive fire stopping areas"
+    if "services" in inspection:
+        return "Project services areas"
+    return "Project-wide / exact location not specified"
+
+
+def _recommended_action(title: str, item: dict) -> str:
+    text = title.lower()
+    if "flash" in text:
+        return "Rectify flashing installation against approved details and provide close-out evidence."
+    if "cavity batten" in text:
+        return "Correct cavity batten installation to match the approved plans."
+    if "membrane" in text or "upstand" in text:
+        return "Correct membrane upstand to the required minimum and provide photo evidence."
+    if "damper" in text or "breakaway" in text:
+        return "Replace with compliant fire damper fixings and provide close-out photos."
+    if "plasterboard" in text:
+        return "Install missing plasterboard fixings and provide close-out evidence."
+    if "penetration" in text or "fire stopping" in text or "collar" in text:
+        return "Complete passive fire stopping treatment and capture compliance evidence."
+    if "duct" in text or "cabling" in text or "clearance" in text:
+        return "Re-coordinate services to remove clashes, maintain clearance, and record QA evidence."
+    if "lagging" in text:
+        return "Install required acoustic lagging and provide photo evidence."
+    return "Assign the responsible trade, rectify the item, and upload close-out evidence."
+
+
+def _report_title(document: dict) -> str:
+    return str(document.get("report_title") or document.get("source_filename") or document.get("inspection_type") or "Inspection report").replace(".pdf", "")
+
+
+def _dominant_project(findings: list[dict], projects: list[dict]) -> dict:
+    if not findings:
+        return projects[0] if projects else {}
+    project_id, _count = Counter(item.get("project_id") for item in findings).most_common(1)[0]
+    return next((item for item in projects if item.get("id") == project_id), {})
+
+
+def _first_value(items, key: str):
+    for item in items:
+        if item.get(key):
+            return item.get(key)
+    return None
+
+
+def _format_date(value: str) -> str:
+    from datetime import datetime
+
+    try:
+        return datetime.fromisoformat(value[:10]).strftime("%d %b %Y")
+    except ValueError:
+        return value
+
+
 def _compact_dashboard(payload: dict) -> dict:
     return {
         "metrics": payload.get("metrics", []),
@@ -876,3 +1281,50 @@ def _days_open(item: dict) -> int:
 def _project_slug_from_report(documents: list[dict], report_id: str) -> str | None:
     document = next((item for item in documents if item.get("id") == report_id), None)
     return document.get("project_slug") if document else None
+
+
+def _failed_items(issues: list[dict]) -> list[str]:
+    failed = []
+    for item in issues:
+        status = str(item.get("status") or "").lower()
+        severity = str(item.get("severity") or "").lower()
+        title = item.get("title") or item.get("description")
+        if title and (status in {"open", "ready"} or severity in {"high", "critical", "medium"}):
+            failed.append(str(title))
+    return failed[:12]
+
+
+def _active_snapshot(snapshot: RepositorySnapshot) -> RepositorySnapshot:
+    projects = [item for item in snapshot.projects if not item.get("deleted_at")]
+    active_project_ids = {item.get("id") for item in projects}
+    documents = [
+        item
+        for item in snapshot.documents
+        if not item.get("deleted_at") and item.get("project_id") in active_project_ids
+    ]
+    active_document_ids = {item.get("id") for item in documents}
+    findings = [
+        item
+        for item in snapshot.findings
+        if item.get("document_id") in active_document_ids
+        and item.get("project_id") in active_project_ids
+        and not item.get("document_deleted_at")
+        and not item.get("deleted_at")
+    ]
+    jobs = [
+        item
+        for item in snapshot.jobs
+        if item.get("document_id") in active_document_ids and not item.get("deleted_at")
+    ]
+    predictions = [
+        item
+        for item in snapshot.predicted_inspections
+        if item.get("project_id") in active_project_ids and not item.get("deleted_at") and documents
+    ]
+    return RepositorySnapshot(
+        projects=projects,
+        documents=documents,
+        jobs=jobs,
+        findings=findings,
+        predicted_inspections=predictions,
+    )
