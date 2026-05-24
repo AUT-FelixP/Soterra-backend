@@ -1136,6 +1136,7 @@ def _issue_payload(item: dict, document: dict) -> dict:
     title = str(item.get("title") or item.get("description") or "Open issue")
     source_title = _report_title(document)
     report_date = str(document.get("report_date") or item.get("created_at") or "")[:10]
+    due_date = _issue_due_date(item)
     return {
         "issue_id": item.get("id"),
         "id": item.get("id"),
@@ -1152,8 +1153,18 @@ def _issue_payload(item: dict, document: dict) -> dict:
         "source_date": report_date,
         "source": f"{source_title}, {_format_date(report_date)}" if report_date else source_title,
         "recommended_action": _recommended_action(title, item),
+        "due_date": due_date,
+        "dueDate": due_date,
         "linkedReport": item.get("document_id"),
     }
+
+
+def _issue_due_date(item: dict) -> str | None:
+    for key in ("due_date", "dueDate", "target_date", "targetDate", "deadline", "due_at", "dueAt"):
+        value = item.get(key)
+        if value:
+            return str(value)[:10]
+    return None
 
 
 def _normalise_location(item: dict, document: dict) -> str:

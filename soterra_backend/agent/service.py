@@ -368,6 +368,9 @@ class SoterraAgentService:
             if intent == AgentIntent.URGENT_ISSUES:
                 tools["get_tracker_state"].forward(tenant_id)
             return build_issue_table_answer(payload)
+        if intent == AgentIntent.ISSUE_STATUS_UPDATE_HELP and _asks_issue_due_question(normalized, history):
+            payload = tools["list_open_issues"].forward(tenant_id, inferred_project)
+            return build_issue_due_answer(payload)
         if intent in {AgentIntent.TRACKER_VIEW, AgentIntent.ISSUE_STATUS_UPDATE_HELP}:
             payload = tools["get_tracker_state"].forward(tenant_id)
             return build_tracker_answer(payload)
@@ -584,6 +587,16 @@ def _is_off_domain_question(normalized: str) -> bool:
     return any(term in normalized for term in off_domain_terms) and not any(term in normalized for term in construction_terms)
 
 
+def _asks_issue_due_question(normalized: str, history: list[Any] | None = None) -> bool:
+    if not any(term in normalized for term in ["due", "deadline", "target date", "by when", "when are these", "when are they"]):
+        return False
+    if any(term in normalized for term in ["inspection due", "next inspection", "upcoming inspection", "future inspection"]):
+        return False
+    history_text = "\n".join(getattr(item, "content", "") for item in (history or [])[-6:]).lower()
+    issue_context = f"{normalized} {history_text}"
+    return any(term in issue_context for term in ["issue", "issues", "open", "urgent", "tracker", "fix"])
+
+
 def classify_intent(
     message: str,
     *,
@@ -607,6 +620,8 @@ def classify_intent(
         return AgentIntent.INGESTION_STATUS
     if any(term in normalized for term in ["upcoming inspection", "next inspection", "future inspection", "inspection due"]):
         return AgentIntent.UPCOMING_INSPECTIONS
+    if _asks_issue_due_question(normalized, history):
+        return AgentIntent.ISSUE_STATUS_UPDATE_HELP
     if any(term in normalized for term in ["highest risk", "risk", "risky", "reinspection risk"]):
         return AgentIntent.RISK_SUMMARY
     if any(term in normalized for term in ["dashboard", "company performance", "close-out rate", "close out rate", "metrics", "overview"]):
@@ -929,6 +944,58 @@ def build_tracker_answer(payload: dict) -> str:
             "issues": [item for item in payload.get("issues", []) if item.get("status") == "Open"],
         }
     )
+
+
+def build_issue_due_answer(payload: dict) -> str:
+    issues = payload.get("issues") or []
+    project = payload.get("project_name") or "this account"
+    address = payload.get("project_address") or "address not specified"
+    total_open = payload.get("total_open", len(issues))
+    high = payload.get("high_priority_open", 0)
+    overdue = payload.get("overdue_open", 0)
+    if not issues:
+        return f"No open issues are available for {project} in the active records for your current account."
+
+    dated = [issue for issue in issues if issue.get("due_date") or issue.get("dueDate")]
+    if dated:
+        opening = f"I found due dates for {len(dated)} of {total_open} open issues for {project} at {address}. {high} are high priority and {overdue} are overdue."
+    else:
+        opening = (
+            f"I do not see due dates stored on these active tracker issues yet. "
+            f"There are {total_open} open issues for {project} at {address}; {high} are high priority and {overdue} are overdue."
+        )
+
+    lines = [
+        opening,
+        "",
+        "| Priority | Issue | Location | Due date | Source | Recommended action |",
+        "|---|---|---|---|---|---|",
+    ]
+    for issue in issues[:10]:
+        due_date = issue.get("due_date") or issue.get("dueDate") or "Not set"
+        lines.append(
+            "| {priority} | {title} | {location} | {due_date} | {source} | {action} |".format(
+                priority=_cell(issue.get("priority") or issue.get("severity")),
+                title=_cell(issue.get("title")),
+                location=_cell(issue.get("location")),
+                due_date=_cell(due_date),
+                source=_cell(issue.get("source") or f"{issue.get('source_report')}, {issue.get('source_date')}"),
+                action=_cell(issue.get("recommended_action")),
+            )
+        )
+    remaining = safe_int(payload.get("remaining_count"))
+    if remaining:
+        lines.append(f"\nShowing the first {min(len(issues), 10)} issues; {remaining} more remain in the tracker.")
+    lines.extend(
+        [
+            "",
+            "Suggested due order:",
+            "1. Treat critical weather-tightness, waterproofing, and passive fire items as due before the next site meeting or reinspection.",
+            "2. Set owner due dates for high-priority envelope and fire-stopping items first because they block close-out evidence.",
+            "3. Schedule services coordination fixes after the critical/high items, grouped by trade and location.",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def build_report_summary_answer(payload: dict, normalized: str = "", project_slug: str | None = None) -> str:

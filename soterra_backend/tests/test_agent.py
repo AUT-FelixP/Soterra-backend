@@ -636,6 +636,40 @@ class AgentToolCoverageTest(unittest.TestCase):
         self.assertIn("council cavity wrap inspection", lowered)
         self.assertNotIn("i found 1 active inspection report", lowered)
 
+    def test_agent_followup_issue_due_dates_use_previous_issue_context(self) -> None:
+        repo = KauriGoldenRepository()
+        service = SoterraAgentService(repo)
+        session = repo.create_agent_chat_session(tenant_id="ten-a", user_id="usr-a", title="Urgent")
+        repo.add_agent_chat_message(tenant_id="ten-a", user_id="usr-a", session_id=session.id, role="user", content="What are the open issues?")
+        repo.add_agent_chat_message(
+            tenant_id="ten-a",
+            user_id="usr-a",
+            session_id=session.id,
+            role="assistant",
+            content="Yes - I found 28 open issues for Kauri Apartments at 24 Kauri Road. 25 are high priority and 0 are overdue.",
+        )
+        history = repo.list_agent_chat_messages(tenant_id="ten-a", user_id="usr-a", session_id=session.id)
+        self.assertEqual(classify_intent("when are these due?", history=history), AgentIntent.ISSUE_STATUS_UPDATE_HELP)
+        used_tools: list[str] = []
+        answer = service._fallback_answer(
+            message="when are these issues due?",
+            tenant_id="ten-a",
+            report_id=None,
+            issue_id=None,
+            project_slug=None,
+            page_context=None,
+            used_tools=used_tools,
+            history=history,
+        )
+        lowered = answer.lower()
+        self.assertIn("list_open_issues", used_tools)
+        self.assertNotIn("summarize_reports", used_tools)
+        self.assertNotIn("no matching active reports", lowered)
+        self.assertIn("due dates", lowered)
+        self.assertIn("not set", lowered)
+        self.assertIn("kauri apartments", lowered)
+        self.assertIn("| priority | issue | location | due date | source | recommended action |", lowered)
+
     def test_agent_open_issue_answer_has_locations_and_recommended_actions(self) -> None:
         service = SoterraAgentService(KauriGoldenRepository())
         answer = service._fallback_answer(
