@@ -11,7 +11,7 @@ def build_extractor(settings: Settings) -> ExtractorBackend:
 
     if mode == "package":
         if settings.package_extractor == "doctr_rules_presidio":
-            from .package_doctr import DoctrRulesPresidioExtractor
+            from .doctr_rules_presidio import DoctrRulesPresidioExtractor
 
             return DoctrRulesPresidioExtractor(settings)
         raise RuntimeError(f"Unsupported package extractor: {settings.package_extractor}")
