@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS users (
   name TEXT NOT NULL,
   email TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
-  role TEXT NOT NULL CHECK (role IN ('admin', 'member')),
+  role TEXT NOT NULL CHECK (role IN ('admin', 'tenant_admin', 'project_admin', 'member', 'viewer')),
   created_at TEXT NOT NULL,
   FOREIGN KEY(tenant_id) REFERENCES tenants(id)
 );
@@ -38,6 +38,13 @@ CREATE TABLE IF NOT EXISTS password_reset_tokens (
   expires_at TEXT NOT NULL,
   used_at TEXT,
   FOREIGN KEY(user_id) REFERENCES users(id),
+  FOREIGN KEY(tenant_id) REFERENCES tenants(id)
+);
+
+CREATE TABLE IF NOT EXISTS upload_attempts (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  attempted_at TEXT NOT NULL,
   FOREIGN KEY(tenant_id) REFERENCES tenants(id)
 );
 
@@ -75,6 +82,7 @@ CREATE TABLE IF NOT EXISTS documents (
 
 CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
   document_id TEXT NOT NULL,
   status TEXT NOT NULL,
   extractor TEXT NOT NULL,
@@ -165,6 +173,9 @@ CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_tenant
 
 CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_token_hash
   ON password_reset_tokens(token_hash);
+
+CREATE INDEX IF NOT EXISTS idx_upload_attempts_tenant_time
+  ON upload_attempts(tenant_id, attempted_at);
 
 CREATE INDEX IF NOT EXISTS idx_documents_file_hash
   ON documents(tenant_id, file_hash);

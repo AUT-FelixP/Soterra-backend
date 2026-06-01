@@ -746,6 +746,12 @@ class AgentToolCoverageTest(unittest.TestCase):
         self.assertEqual(len(repo.list_agent_chat_messages(tenant_id="ten-a", user_id="usr-b", session_id=session.id)), 0)
         self.assertIsNone(repo.get_agent_chat_session(tenant_id="ten-b", user_id="usr-a", session_id=session.id))
 
+    def test_agent_member_directory_is_tenant_admin_only(self) -> None:
+        tools = {tool.name: tool for tool in build_soterra_tools(FakeRepository(), "ten-1", role="member")}
+        payload = tools["get_tenant_members"].forward("ten-1")
+        self.assertEqual(payload["items"], [])
+        self.assertIn("administrator", payload["error"].lower())
+
     def test_agent_cross_tenant_data_blocked(self) -> None:
         service = SoterraAgentService(EmptyTenantRepository())
         answer = service._fallback_answer(

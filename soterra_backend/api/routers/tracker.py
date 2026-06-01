@@ -4,9 +4,9 @@ from fastapi import APIRouter, Depends
 
 from ...schemas.issues import IssueUpdateRequest
 from ...services.issue_service import IssueService
-from ..dependencies import AuthContext, get_auth_context, get_issue_service
+from ..dependencies import AuthContext, get_auth_context, get_issue_service, require_tenant_data_access
 
-router = APIRouter(prefix="/tracker")
+router = APIRouter(prefix="/tracker", dependencies=[Depends(require_tenant_data_access)])
 
 
 @router.get("")

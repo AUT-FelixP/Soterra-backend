@@ -85,6 +85,7 @@ class ReportIngestionService:
         file_tag = f"{upload.tenant_id}-file-{file_hash[:12]}"
 
         stored_file = self.storage.store(
+            tenant_id=upload.tenant_id,
             document_id=document_id,
             filename=upload.filename,
             content=upload.content,
@@ -217,11 +218,26 @@ class ReportUploadService:
         site: str,
         trade: str,
     ) -> JSONResponse:
+        if not self.repository.consume_upload_rate_limit(
+            tenant_id=tenant_id,
+            limit=self.settings.upload_rate_limit_per_hour,
+            window_seconds=60 * 60,
+        ):
+            logger.warning("upload_rejected tenant_id=%s reason=rate_limit", tenant_id)
+            raise HTTPException(status_code=429, detail="Too many report uploads. Please try again later.")
         content = await read_limited_upload(file, self.settings.max_upload_bytes)
         if not content:
+            logger.warning("upload_rejected tenant_id=%s reason=empty_file", tenant_id)
             raise HTTPException(status_code=400, detail="Uploaded file is empty.")
         if (file.content_type or "application/pdf") not in PDF_CONTENT_TYPES or not content.startswith(b"%PDF"):
+            logger.warning("upload_rejected tenant_id=%s reason=invalid_pdf", tenant_id)
             raise HTTPException(status_code=400, detail="Only PDF uploads are supported.")
+        if _pdf_page_count(content) > self.settings.max_upload_pages:
+            logger.warning("upload_rejected tenant_id=%s reason=page_limit", tenant_id)
+            raise HTTPException(status_code=413, detail="Uploaded PDF has too many pages.")
+        if len(self.repository.load_snapshot(tenant_id).documents) >= self.settings.max_reports_per_tenant:
+            logger.warning("upload_rejected tenant_id=%s reason=tenant_quota", tenant_id)
+            raise HTTPException(status_code=429, detail="Tenant report upload quota reached.")
 
         upload_ctx = UploadContext(
             tenant_id=tenant_id,
@@ -244,9 +260,12 @@ class ReportUploadService:
                 report = self.ingestion_service.finish_ingest(start, upload_ctx)
             except Exception as exc:
                 deleted = self.repository.delete_report(tenant_id, start.document_id)
-                storage_path = (deleted or {}).get("storage_path") or getattr(start.stored_file, "storage_path", None)
-                if storage_path:
-                    self.storage.delete(storage_path=storage_path)
+                if deleted or getattr(start.stored_file, "storage_path", None):
+                    self.storage.delete(
+                        tenant_id=tenant_id,
+                        document_id=start.document_id,
+                        filename=upload_ctx.filename,
+                    )
                 raise HTTPException(status_code=422, detail="Report extraction failed. The upload was not saved.") from exc
             return JSONResponse({"item": report, "isDuplicate": False}, status_code=201)
 
@@ -274,10 +293,19 @@ class ReportUploadService:
         deleted = self.repository.delete_report(tenant_id, report_id)
         if not deleted:
             raise HTTPException(status_code=404, detail="Report not found")
-        storage_path = deleted.get("storage_path")
-        if storage_path:
-            self.storage.delete(storage_path=storage_path)
+        self.storage.delete(
+            tenant_id=tenant_id,
+            document_id=report_id,
+            filename=deleted["source_filename"],
+        )
         return {"deleted": True, "id": report_id}
+
+    def download_report(self, *, tenant_id: str, report_id: str) -> tuple[bytes, str]:
+        report = self.repository.get_report(tenant_id, report_id)
+        if not report:
+            raise HTTPException(status_code=404, detail="Report not found")
+        filename = report["source_filename"]
+        return self.storage.read(tenant_id=tenant_id, document_id=report_id, filename=filename), filename
 
     def bulk_delete_reports(self, *, tenant_id: str, report_ids: list[str]) -> dict:
         unique_ids = []
@@ -297,9 +325,11 @@ class ReportUploadService:
             if not deleted:
                 missing_ids.append(report_id)
                 continue
-            storage_path = deleted.get("storage_path")
-            if storage_path:
-                self.storage.delete(storage_path=storage_path)
+            self.storage.delete(
+                tenant_id=tenant_id,
+                document_id=report_id,
+                filename=deleted["source_filename"],
+            )
             deleted_ids.append(report_id)
         return {"deleted": deleted_ids, "missing": missing_ids, "deletedCount": len(deleted_ids), "missingCount": len(missing_ids)}
 
@@ -320,3 +350,13 @@ async def read_limited_upload(file: UploadFile, max_bytes: int) -> bytes:
 
 def _file_hash(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
+
+
+def _pdf_page_count(content: bytes) -> int:
+    try:
+        import fitz
+
+        with fitz.open(stream=content, filetype="pdf") as document:
+            return document.page_count
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Uploaded PDF could not be read.") from exc

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, UploadFile
+from urllib.parse import quote
+
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Response, UploadFile
 
 from ...schemas.reports import BulkDeleteReportsRequest
 from ...services.report_service import ReportUploadService
-from ..dependencies import AuthContext, get_auth_context, get_report_service
+from ..dependencies import AuthContext, get_auth_context, get_report_service, require_tenant_data_access
 
-router = APIRouter(prefix="/reports")
+router = APIRouter(prefix="/reports", dependencies=[Depends(require_tenant_data_access)])
 
 
 @router.get("")
@@ -66,6 +68,20 @@ def get_report(
     service: ReportUploadService = Depends(get_report_service),
 ) -> dict:
     return service.get_report(tenant_id=context.tenant_id, report_id=report_id)
+
+
+@router.get("/{report_id}/download")
+def download_report(
+    report_id: str,
+    context: AuthContext = Depends(get_auth_context),
+    service: ReportUploadService = Depends(get_report_service),
+) -> Response:
+    content, filename = service.download_report(tenant_id=context.tenant_id, report_id=report_id)
+    return Response(
+        content=content,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
 
 
 @router.delete("/{report_id}")

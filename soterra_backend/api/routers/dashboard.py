@@ -3,9 +3,9 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 
 from ...services.dashboard_service import DashboardService
-from ..dependencies import AuthContext, get_auth_context, get_dashboard_service
+from ..dependencies import AuthContext, get_auth_context, get_dashboard_service, require_tenant_data_access
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_tenant_data_access)])
 
 
 @router.get("/dashboard")

@@ -39,6 +39,9 @@ class RepositoryBackend(Protocol):
     def get_auth_session(self, *, access_token: str) -> AuthSession | None:
         ...
 
+    def consume_upload_rate_limit(self, *, tenant_id: str, limit: int, window_seconds: int) -> bool:
+        ...
+
     def get_report_by_file_hash(self, tenant_id: str, file_hash: str) -> dict | None:
         ...
 

@@ -3,9 +3,9 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 
 from ...agent import AgentChatRequest, AgentConfigurationError, AgentDisabledError, SoterraAgentService
-from ..dependencies import AuthContext, get_agent_service, require_auth_context
+from ..dependencies import AuthContext, get_agent_service, require_auth_context, require_tenant_data_access
 
-router = APIRouter(prefix="/agent/chat")
+router = APIRouter(prefix="/agent/chat", dependencies=[Depends(require_tenant_data_access)])
 
 
 @router.get("/status")

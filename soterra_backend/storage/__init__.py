@@ -14,31 +14,46 @@ class LocalFileStorage:
         self.root_dir = root_dir
         self.root_dir.mkdir(parents=True, exist_ok=True)
 
-    def store(self, *, document_id: str, filename: str, content: bytes, content_type: str) -> StoredFile:
+    def store(
+        self,
+        *,
+        tenant_id: str,
+        document_id: str,
+        filename: str,
+        content: bytes,
+        content_type: str,
+    ) -> StoredFile:
         _ = content_type
-        safe_name = _safe_storage_filename(filename)
-        document_dir = (self.root_dir / document_id).resolve()
-        destination = (document_dir / safe_name).resolve()
-        if document_dir not in destination.parents:
-            raise RuntimeError("Resolved upload path escaped the storage directory.")
+        document_dir, destination = self._paths(tenant_id=tenant_id, document_id=document_id, filename=filename)
         document_dir.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(content)
         resolved = str(destination)
         return StoredFile(storage_path=resolved, download_url=resolved)
 
-    def delete(self, *, storage_path: str) -> None:
-        root = self.root_dir.resolve()
-        target = Path(storage_path).resolve()
-        if root != target and root not in target.parents:
-            return
+    def delete(self, *, tenant_id: str, document_id: str, filename: str) -> None:
+        document_dir, target = self._paths(tenant_id=tenant_id, document_id=document_id, filename=filename)
         if target.exists() and target.is_file():
             target.unlink()
-        parent = target.parent
-        if parent.exists() and parent.is_dir() and parent.name.startswith("rpt-"):
+        if document_dir.exists() and document_dir.is_dir():
             try:
-                parent.rmdir()
+                document_dir.rmdir()
             except OSError:
                 return
+
+    def read(self, *, tenant_id: str, document_id: str, filename: str) -> bytes:
+        _, target = self._paths(tenant_id=tenant_id, document_id=document_id, filename=filename)
+        return target.read_bytes()
+
+    def _paths(self, *, tenant_id: str, document_id: str, filename: str) -> tuple[Path, Path]:
+        safe_tenant_id = _safe_storage_component(tenant_id, "tenant_id")
+        safe_document_id = _safe_storage_component(document_id, "document_id")
+        safe_name = _safe_storage_filename(filename)
+        root = self.root_dir.resolve()
+        document_dir = (root / safe_tenant_id / safe_document_id).resolve()
+        destination = (document_dir / safe_name).resolve()
+        if root not in document_dir.parents or document_dir not in destination.parents:
+            raise RuntimeError("Resolved storage path escaped the storage directory.")
+        return document_dir, destination
 
 
 class SupabaseFileStorage:
@@ -53,9 +68,16 @@ class SupabaseFileStorage:
         self.client = create_client(url, service_role_key)
         self.bucket = bucket
 
-    def store(self, *, document_id: str, filename: str, content: bytes, content_type: str) -> StoredFile:
-        safe_name = _safe_storage_filename(filename)
-        path = f"{document_id}/{safe_name}"
+    def store(
+        self,
+        *,
+        tenant_id: str,
+        document_id: str,
+        filename: str,
+        content: bytes,
+        content_type: str,
+    ) -> StoredFile:
+        path = _supabase_storage_path(tenant_id=tenant_id, document_id=document_id, filename=filename)
 
         try:
             self.client.storage.from_(self.bucket).upload(
@@ -80,8 +102,13 @@ class SupabaseFileStorage:
             signed_url = signed.get("signedURL") or signed.get("signedUrl")
         return StoredFile(storage_path=path, download_url=signed_url)
 
-    def delete(self, *, storage_path: str) -> None:
-        self.client.storage.from_(self.bucket).remove([storage_path])
+    def delete(self, *, tenant_id: str, document_id: str, filename: str) -> None:
+        path = _supabase_storage_path(tenant_id=tenant_id, document_id=document_id, filename=filename)
+        self.client.storage.from_(self.bucket).remove([path])
+
+    def read(self, *, tenant_id: str, document_id: str, filename: str) -> bytes:
+        path = _supabase_storage_path(tenant_id=tenant_id, document_id=document_id, filename=filename)
+        return self.client.storage.from_(self.bucket).download(path)
 
 
 def build_storage(settings: Settings) -> StorageBackend:
@@ -104,3 +131,16 @@ def _safe_storage_filename(filename: str) -> str:
     cleaned = cleaned.replace("\\", "-").replace("/", "-")
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", cleaned).strip(".-")
     return cleaned or "uploaded-report.pdf"
+
+
+def _safe_storage_component(value: str, field_name: str) -> str:
+    cleaned = str(value or "").strip()
+    if not cleaned or not re.fullmatch(r"[A-Za-z0-9_-]+", cleaned):
+        raise ValueError(f"Invalid {field_name} for storage path.")
+    return cleaned
+
+
+def _supabase_storage_path(*, tenant_id: str, document_id: str, filename: str) -> str:
+    safe_tenant_id = _safe_storage_component(tenant_id, "tenant_id")
+    safe_document_id = _safe_storage_component(document_id, "document_id")
+    return f"{safe_tenant_id}/{safe_document_id}/{_safe_storage_filename(filename)}"

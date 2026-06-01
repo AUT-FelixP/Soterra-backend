@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from fastapi import HTTPException, Request
+from fastapi import Depends, HTTPException, Request
 
 from ..agent import SoterraAgentService
 from ..email_service import EmailService
@@ -10,10 +10,6 @@ from ..models import AuthSession
 from ..repositories.base import RepositoryBackend
 from ..services import DashboardService, IssueService, ReportUploadService
 from ..storage.base import StorageBackend
-
-DEFAULT_TENANT_ID = "ten-default"
-DEFAULT_USER_ID = "usr-default-admin"
-
 
 @dataclass(frozen=True)
 class AuthContext:
@@ -33,9 +29,7 @@ def get_auth_context(request: Request) -> AuthContext:
             session=session,
         )
 
-    tenant_id = request.headers.get("X-Soterra-Tenant-Id") or DEFAULT_TENANT_ID
-    user_id = request.headers.get("X-Soterra-User-Id") or DEFAULT_USER_ID
-    return AuthContext(tenant_id=tenant_id, user_id=user_id)
+    raise HTTPException(status_code=401, detail="Authentication required.")
 
 
 def require_auth_context(request: Request) -> AuthContext:
@@ -43,6 +37,18 @@ def require_auth_context(request: Request) -> AuthContext:
     if not session:
         raise HTTPException(status_code=401, detail="Authentication required.")
     return get_auth_context(request)
+
+
+def require_tenant_admin(context: AuthContext) -> AuthContext:
+    if context.role not in {"admin", "tenant_admin"}:
+        raise HTTPException(status_code=403, detail="Tenant administrator access required.")
+    return context
+
+
+def require_tenant_data_access(context: AuthContext = Depends(get_auth_context)) -> AuthContext:
+    # Project assignment storage is not exposed yet. Until it is, only tenant-wide
+    # administrators may use tenant-wide analytics and report routes.
+    return require_tenant_admin(context)
 
 
 def get_repository(request: Request) -> RepositoryBackend:

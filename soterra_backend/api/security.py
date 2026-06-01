@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
 import time
 
 from fastapi import HTTPException, Request
 
+logger = logging.getLogger("soterra_backend")
 
 class RateLimiter:
     def __init__(self) -> None:
@@ -49,4 +51,5 @@ def check_rate_limit(request: Request, action: str, subject: str, *, limit: int,
     ip_address = request.client.host if request.client else "unknown"
     key = f"{action}:{ip_address}:{subject}"
     if not rate_limiter.check(key, limit=limit, window_seconds=window_seconds):
+        logger.warning("rate_limit_rejected action=%s subject=%s ip=%s", action, subject, ip_address)
         raise HTTPException(status_code=429, detail="Too many attempts. Please try again later.")

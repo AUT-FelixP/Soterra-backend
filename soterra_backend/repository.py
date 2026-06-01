@@ -54,6 +54,9 @@ class RepositoryBackend(Protocol):
     def get_auth_session(self, *, access_token: str) -> AuthSession | None:
         ...
 
+    def consume_upload_rate_limit(self, *, tenant_id: str, limit: int, window_seconds: int) -> bool:
+        ...
+
     def get_report_by_file_hash(self, tenant_id: str, file_hash: str) -> dict | None:
         ...
 
@@ -392,6 +395,23 @@ class SqliteRepository:
             return None
         return session.model_copy(update={"access_token": access_token, "expires_at": row["expires_at"]})
 
+    def consume_upload_rate_limit(self, *, tenant_id: str, limit: int, window_seconds: int) -> bool:
+        now = datetime.now(tz=UTC).replace(microsecond=0)
+        cutoff = (now - timedelta(seconds=max(1, window_seconds))).isoformat()
+        with self._connect() as connection:
+            connection.execute("DELETE FROM upload_attempts WHERE attempted_at < ?", (cutoff,))
+            attempts = connection.execute(
+                "SELECT COUNT(*) AS count FROM upload_attempts WHERE tenant_id = ?",
+                (tenant_id,),
+            ).fetchone()["count"]
+            if attempts >= max(1, limit):
+                return False
+            connection.execute(
+                "INSERT INTO upload_attempts (id, tenant_id, attempted_at) VALUES (?, ?, ?)",
+                (create_id("upl"), tenant_id, now.isoformat()),
+            )
+        return True
+
     def get_report_by_file_hash(self, tenant_id: str, file_hash: str) -> dict | None:
         row = None
         with self._connect() as connection:
@@ -476,10 +496,10 @@ class SqliteRepository:
             )
             connection.execute(
                 """
-                INSERT INTO jobs (id, document_id, status, extractor, started_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO jobs (id, tenant_id, document_id, status, extractor, started_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (job_id, document_id, "running", "pending", timestamp),
+                (job_id, tenant_id, document_id, "running", "pending", timestamp),
             )
 
     def complete_document(
@@ -642,7 +662,7 @@ class SqliteRepository:
                 """
                 UPDATE jobs
                 SET status = ?, extractor = ?, raw_text_excerpt = ?, raw_payload_json = ?, completed_at = ?
-                WHERE id = ?
+                WHERE tenant_id = ? AND id = ?
                 """,
                 (
                     "completed",
@@ -650,6 +670,7 @@ class SqliteRepository:
                     raw_text[:4000],
                     json.dumps(raw_payload),
                     timestamp,
+                    tenant_id,
                     job_id,
                 ),
             )
@@ -679,9 +700,9 @@ class SqliteRepository:
                 """
                 UPDATE jobs
                 SET status = ?, extractor = ?, error_message = ?, raw_text_excerpt = ?, completed_at = ?
-                WHERE id = ?
+                WHERE tenant_id = ? AND id = ?
                 """,
-                ("failed", extractor_name, error_message, raw_text[:4000], timestamp, job_id),
+                ("failed", extractor_name, error_message, raw_text[:4000], timestamp, tenant_id, job_id),
             )
 
     def load_snapshot(self, tenant_id: str) -> RepositorySnapshot:
@@ -719,14 +740,14 @@ class SqliteRepository:
     def delete_report(self, tenant_id: str, report_id: str) -> dict | None:
         with self._connect() as connection:
             document = connection.execute(
-                "SELECT id, project_id, storage_path FROM documents WHERE tenant_id = ? AND id = ?",
+                "SELECT id, project_id, storage_path, source_filename FROM documents WHERE tenant_id = ? AND id = ?",
                 (tenant_id, report_id),
             ).fetchone()
             if not document:
                 return None
             project_id = document["project_id"]
             storage_path = document["storage_path"]
-            connection.execute("DELETE FROM jobs WHERE document_id = ?", (report_id,))
+            connection.execute("DELETE FROM jobs WHERE tenant_id = ? AND document_id = ?", (tenant_id, report_id))
             connection.execute("DELETE FROM findings WHERE tenant_id = ? AND document_id = ?", (tenant_id, report_id))
             connection.execute("DELETE FROM documents WHERE tenant_id = ? AND id = ?", (tenant_id, report_id))
             remaining = connection.execute(
@@ -735,7 +756,7 @@ class SqliteRepository:
             ).fetchone()["count"]
             if remaining == 0:
                 connection.execute("DELETE FROM predicted_inspections WHERE tenant_id = ? AND project_id = ?", (tenant_id, project_id))
-        return {"id": report_id, "storage_path": storage_path}
+        return {"id": report_id, "storage_path": storage_path, "source_filename": document["source_filename"]}
 
     def get_issue(self, tenant_id: str, issue_id: str) -> dict | None:
         snapshot = self.load_snapshot(tenant_id)
@@ -1114,11 +1135,17 @@ class SqliteRepository:
             )
 
     def _ensure_tenant_columns(self, connection: sqlite3.Connection) -> None:
-        for table in ("projects", "documents", "findings", "predicted_inspections"):
+        for table in ("projects", "documents", "findings", "predicted_inspections", "jobs"):
             columns = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
             if "tenant_id" not in columns:
                 connection.execute(f"ALTER TABLE {table} ADD COLUMN tenant_id TEXT")
-                connection.execute(f"UPDATE {table} SET tenant_id = ? WHERE tenant_id IS NULL", (_DEFAULT_TENANT_ID,))
+                if table == "jobs":
+                    connection.execute(
+                        "UPDATE jobs SET tenant_id = COALESCE((SELECT tenant_id FROM documents WHERE documents.id = jobs.document_id), ?) WHERE tenant_id IS NULL",
+                        (_DEFAULT_TENANT_ID,),
+                    )
+                else:
+                    connection.execute(f"UPDATE {table} SET tenant_id = ? WHERE tenant_id IS NULL", (_DEFAULT_TENANT_ID,))
         connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_tenant_slug_unique ON projects(tenant_id, slug)")
 
     def _is_admin(self, tenant_id: str, user_id: str) -> bool:
@@ -1127,7 +1154,7 @@ class SqliteRepository:
                 "SELECT role FROM users WHERE tenant_id = ? AND id = ?",
                 (tenant_id, user_id),
             ).fetchone()
-        return bool(row and row["role"] == "admin")
+        return bool(row and row["role"] in {"admin", "tenant_admin"})
 
     def _refresh_views(self, connection: sqlite3.Connection) -> None:
         # Recreate analytics views so local databases pick up view fixes without a manual reset.
@@ -1163,6 +1190,8 @@ class SupabaseRepository:
                 "The supabase package is not installed. Run the Python dependency install step first."
             ) from exc
 
+        # The service-role client bypasses Supabase RLS. Every tenant-owned query below
+        # must therefore include an explicit tenant_id filter.
         self.client = create_client(url, service_role_key)
 
     def initialize(self) -> None:
@@ -1271,7 +1300,7 @@ class SupabaseRepository:
             return None
         row = rows[0]
         self.client.table("users").update({"password_hash": _hash_password(password)}).eq("id", row["user_id"]).eq("tenant_id", row["tenant_id"]).execute()
-        self.client.table("password_reset_tokens").update({"used_at": now}).eq("id", row["id"]).execute()
+        self.client.table("password_reset_tokens").update({"used_at": now}).eq("tenant_id", row["tenant_id"]).eq("id", row["id"]).execute()
         self.client.table("auth_sessions").update({"revoked_at": now}).eq("user_id", row["user_id"]).eq("tenant_id", row["tenant_id"]).is_("revoked_at", "null").execute()
         return self.create_auth_session(user_id=row["user_id"], tenant_id=row["tenant_id"])
 
@@ -1289,7 +1318,7 @@ class SupabaseRepository:
 
     def invite_member(self, *, tenant_id: str, actor_user_id: str, name: str, email: str, password: str) -> dict:
         session = self.get_user_session(user_id=actor_user_id, tenant_id=tenant_id)
-        if not session or session.user.role != "admin":
+        if not session or session.user.role not in {"admin", "tenant_admin"}:
             raise PermissionError("Only tenant admins can invite members.")
         user_id = create_id("usr")
         normalized_email = _normalize_email(email)
@@ -1310,14 +1339,14 @@ class SupabaseRepository:
 
     def remove_member(self, *, tenant_id: str, actor_user_id: str, user_id: str) -> bool:
         session = self.get_user_session(user_id=actor_user_id, tenant_id=tenant_id)
-        if not session or session.user.role != "admin":
+        if not session or session.user.role not in {"admin", "tenant_admin"}:
             raise PermissionError("Only tenant admins can remove members.")
         if actor_user_id == user_id:
             raise ValueError("Admins cannot remove their own account.")
         row = self.client.table("users").select("id, role").eq("tenant_id", tenant_id).eq("id", user_id).limit(1).execute().data
         if not row:
             return False
-        if row[0]["role"] == "admin":
+        if row[0]["role"] in {"admin", "tenant_admin"}:
             raise ValueError("Admin users cannot be removed from this in-app member flow.")
         self.client.table("users").delete().eq("tenant_id", tenant_id).eq("id", user_id).execute()
         return True
@@ -1374,6 +1403,17 @@ class SupabaseRepository:
         if not session:
             return None
         return session.model_copy(update={"access_token": access_token, "expires_at": row[0]["expires_at"]})
+
+    def consume_upload_rate_limit(self, *, tenant_id: str, limit: int, window_seconds: int) -> bool:
+        result = self.client.rpc(
+            "consume_tenant_upload_rate_limit",
+            {
+                "p_tenant_id": tenant_id,
+                "p_limit": max(1, limit),
+                "p_window_seconds": max(1, window_seconds),
+            },
+        ).execute().data
+        return bool(result)
 
     def get_report_by_file_hash(self, tenant_id: str, file_hash: str) -> dict | None:
         row = (
@@ -1480,6 +1520,7 @@ class SupabaseRepository:
         self.client.table("jobs").insert(
             {
                 "id": job_id,
+                "tenant_id": tenant_id,
                 "document_id": document_id,
                 "status": "running",
                 "extractor": "pending",
@@ -1600,7 +1641,7 @@ class SupabaseRepository:
                 "raw_payload_json": raw_payload,
                 "completed_at": timestamp,
             }
-        ).eq("id", job_id).execute()
+        ).eq("tenant_id", tenant_id).eq("id", job_id).execute()
 
     def fail_job(
         self,
@@ -1627,12 +1668,12 @@ class SupabaseRepository:
                 "raw_text_excerpt": raw_text[:4000],
                 "completed_at": timestamp,
             }
-        ).eq("id", job_id).execute()
+        ).eq("tenant_id", tenant_id).eq("id", job_id).execute()
 
     def load_snapshot(self, tenant_id: str) -> RepositorySnapshot:
         projects = self.client.table("projects").select("*").eq("tenant_id", tenant_id).order("name").execute().data
         documents = self.client.table("documents").select("*, projects(*)").eq("tenant_id", tenant_id).order("report_date", desc=True).execute().data
-        jobs = self.client.table("jobs").select("*, documents!inner(tenant_id)").eq("documents.tenant_id", tenant_id).order("started_at", desc=True).execute().data
+        jobs = self.client.table("jobs").select("*").eq("tenant_id", tenant_id).order("started_at", desc=True).execute().data
         findings = self.client.table("findings").select("*, projects(*), documents(*)").eq("tenant_id", tenant_id).execute().data
         predictions = self.client.table("predicted_inspections").select("*").eq("tenant_id", tenant_id).order("expected_date").execute().data
 
@@ -1690,18 +1731,18 @@ class SupabaseRepository:
         return None
 
     def delete_report(self, tenant_id: str, report_id: str) -> dict | None:
-        row = self.client.table("documents").select("id, project_id, storage_path").eq("tenant_id", tenant_id).eq("id", report_id).limit(1).execute().data
+        row = self.client.table("documents").select("id, project_id, storage_path, source_filename").eq("tenant_id", tenant_id).eq("id", report_id).limit(1).execute().data
         if not row:
             return None
         document = row[0]
         project_id = document["project_id"]
-        self.client.table("jobs").delete().eq("document_id", report_id).execute()
+        self.client.table("jobs").delete().eq("tenant_id", tenant_id).eq("document_id", report_id).execute()
         self.client.table("findings").delete().eq("tenant_id", tenant_id).eq("document_id", report_id).execute()
         self.client.table("documents").delete().eq("tenant_id", tenant_id).eq("id", report_id).execute()
         remaining = self.client.table("documents").select("id").eq("tenant_id", tenant_id).eq("project_id", project_id).limit(1).execute().data
         if not remaining:
             self.client.table("predicted_inspections").delete().eq("tenant_id", tenant_id).eq("project_id", project_id).execute()
-        return {"id": report_id, "storage_path": document.get("storage_path")}
+        return {"id": report_id, "storage_path": document.get("storage_path"), "source_filename": document["source_filename"]}
 
     def get_issue(self, tenant_id: str, issue_id: str) -> dict | None:
         snapshot = self.load_snapshot(tenant_id)

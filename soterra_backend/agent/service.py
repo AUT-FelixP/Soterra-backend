@@ -106,7 +106,7 @@ class SoterraAgentService:
         history = self.repository.list_agent_chat_messages(tenant_id=tenant_id, user_id=user_id, session_id=session.id, limit=24)
         self.repository.add_agent_chat_message(tenant_id=tenant_id, user_id=user_id, session_id=session.id, role="user", content=message)
 
-        tools = build_soterra_tools(self.repository, tenant_id, record_tool)
+        tools = build_soterra_tools(self.repository, tenant_id, record_tool, role=role)
         intent = classify_intent(message, page_context=page_context, history=history, report_id=report_id, issue_id=issue_id, project_slug=project_slug)
         fallback_error: Exception | None = None
         try:
@@ -121,6 +121,7 @@ class SoterraAgentService:
                     used_tools=used_tools,
                     history=history,
                     intent=intent,
+                    role=role,
                 )
             else:
                 agent = self._build_agent(tools)
@@ -149,6 +150,7 @@ class SoterraAgentService:
                         used_tools=used_tools,
                         history=history,
                         intent=intent,
+                        role=role,
                     )
         except AgentDisabledError:
             raise
@@ -165,6 +167,7 @@ class SoterraAgentService:
                 used_tools=used_tools,
                 history=history,
                 intent=intent,
+                role=role,
             )
 
         related = self._related_entities(answer, report_id=report_id, issue_id=issue_id, project_slug=project_slug)
@@ -352,8 +355,17 @@ class SoterraAgentService:
         used_tools: list[str],
         history: list[Any] | None = None,
         intent: AgentIntent | None = None,
+        role: str = "tenant_admin",
     ) -> str:
-        tools = {tool.name: tool for tool in build_soterra_tools(self.repository, tenant_id, lambda name: used_tools.append(name) if name not in used_tools else None)}
+        tools = {
+            tool.name: tool
+            for tool in build_soterra_tools(
+                self.repository,
+                tenant_id,
+                lambda name: used_tools.append(name) if name not in used_tools else None,
+                role=role,
+            )
+        }
         normalized = f"{page_context or ''} {message}".lower()
         intent = intent or classify_intent(message, page_context=page_context, history=history, report_id=report_id, issue_id=issue_id, project_slug=project_slug)
 

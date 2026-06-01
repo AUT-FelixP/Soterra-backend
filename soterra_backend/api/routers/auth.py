@@ -11,7 +11,7 @@ from ...schemas.auth import (
     RegisterAccountRequest,
     ResetPasswordRequest,
 )
-from ..dependencies import AuthContext, get_auth_context, get_email_service, get_repository
+from ..dependencies import AuthContext, get_auth_context, get_email_service, get_repository, require_tenant_admin
 from ..security import check_rate_limit
 
 router = APIRouter()
@@ -120,6 +120,7 @@ def list_members(
     context: AuthContext = Depends(get_auth_context),
     repository: RepositoryBackend = Depends(get_repository),
 ) -> dict:
+    require_tenant_admin(context)
     return {"items": repository.list_members(tenant_id=context.tenant_id)}
 
 

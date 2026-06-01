@@ -39,36 +39,24 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only before dependen
 ToolRecorder = Callable[[str], None]
 
 
-def build_soterra_tools(repository: RepositoryBackend, tenant_id: str, recorder: ToolRecorder | None = None) -> list[Tool]:
+def build_soterra_tools(
+    repository: RepositoryBackend,
+    tenant_id: str,
+    recorder: ToolRecorder | None = None,
+    *,
+    role: str = "tenant_admin",
+) -> list[Tool]:
     return [
-        ApiRouteCatalogTool(repository, tenant_id, recorder),
-        SchemaCatalogTool(repository, tenant_id, recorder),
-        BackendCatalogTool(repository, tenant_id, recorder),
-        DataSchemaCatalogTool(repository, tenant_id, recorder),
-        TenantMembersTool(repository, tenant_id, recorder),
-        ProjectCatalogTool(repository, tenant_id, recorder),
-        IngestionJobsTool(repository, tenant_id, recorder),
-        IssueAnalyticsTool(repository, tenant_id, recorder),
-        SummarizeReportsTool(repository, tenant_id, recorder),
-        ListOpenIssuesTool(repository, tenant_id, recorder),
-        TrackerStateTool(repository, tenant_id, recorder),
-        DashboardMetricsTool(repository, tenant_id, recorder),
-        RiskSummaryTool(repository, tenant_id, recorder),
-        ReportsSummaryTool(repository, tenant_id, recorder),
-        ReportDetailTool(repository, tenant_id, recorder),
-        TrackerSummaryTool(repository, tenant_id, recorder),
-        IssueDetailTool(repository, tenant_id, recorder),
-        DashboardSummaryTool(repository, tenant_id, recorder),
-        CompanyMetricsTool(repository, tenant_id, recorder),
-        PerformanceMetricsTool(repository, tenant_id, recorder),
-        ProjectMetricsTool(repository, tenant_id, recorder),
-        DashboardRiskTool(repository, tenant_id, recorder),
-        LiveTrackerTool(repository, tenant_id, recorder),
-        TopFailuresTool(repository, tenant_id, recorder),
-        UpcomingRiskTool(repository, tenant_id, recorder),
-        InsightsPreviewTool(repository, tenant_id, recorder),
-        InspectionRiskTool(repository, tenant_id, recorder),
-        InsightsTool(repository, tenant_id, recorder),
+        tool(repository, tenant_id, recorder, role=role)
+        for tool in (
+            ApiRouteCatalogTool, SchemaCatalogTool, BackendCatalogTool, DataSchemaCatalogTool,
+            TenantMembersTool, ProjectCatalogTool, IngestionJobsTool, IssueAnalyticsTool,
+            SummarizeReportsTool, ListOpenIssuesTool, TrackerStateTool, DashboardMetricsTool,
+            RiskSummaryTool, ReportsSummaryTool, ReportDetailTool, TrackerSummaryTool,
+            IssueDetailTool, DashboardSummaryTool, CompanyMetricsTool, PerformanceMetricsTool,
+            ProjectMetricsTool, DashboardRiskTool, LiveTrackerTool, TopFailuresTool,
+            UpcomingRiskTool, InsightsPreviewTool, InspectionRiskTool, InsightsTool,
+        )
     ]
 
 
@@ -76,11 +64,19 @@ class SoterraTenantTool(Tool):
     inputs = {"tenant_id": {"type": "string", "description": "Current authenticated tenant id."}}
     output_type = "object"
 
-    def __init__(self, repository: RepositoryBackend, tenant_id: str, recorder: ToolRecorder | None = None) -> None:
+    def __init__(
+        self,
+        repository: RepositoryBackend,
+        tenant_id: str,
+        recorder: ToolRecorder | None = None,
+        *,
+        role: str = "tenant_admin",
+    ) -> None:
         super().__init__()
         self.repository = repository
         self.tenant_id = tenant_id
         self.recorder = recorder
+        self.role = role
 
     def _record(self) -> None:
         if self.recorder:
@@ -298,9 +294,9 @@ class DataSchemaCatalogTool(SoterraTenantTool):
                 },
                 {
                     "table": "jobs",
-                    "purpose": "Report ingestion/extraction status, extractor name, errors, raw text excerpt, and raw extraction payload for processing diagnostics.",
-                    "safeFields": ["id", "document_id", "status", "extractor", "error_message", "started_at", "completed_at", "raw_text_excerpt"],
-                    "blockedFields": ["full raw_payload_json unless a specific diagnostic needs summarized extraction shape"],
+                    "purpose": "Report ingestion/extraction status, extractor name, and safe processing diagnostics.",
+                    "safeFields": ["id", "document_id", "status", "extractor", "error_message", "started_at", "completed_at"],
+                    "blockedFields": ["raw_text_excerpt", "raw_payload_json"],
                     "coveredBy": ["get_ingestion_jobs"],
                     "tenantRowCount": len(snapshot.jobs),
                 },
@@ -337,6 +333,8 @@ class TenantMembersTool(SoterraTenantTool):
         if mismatch := self._check_tenant(tenant_id):
             return mismatch
         self._record()
+        if self.role not in {"admin", "tenant_admin"}:
+            return {"items": [], "count": 0, "error": "Tenant administrator access required."}
         try:
             members = self.repository.list_members(tenant_id=tenant_id)
             return {
@@ -391,7 +389,7 @@ class ProjectCatalogTool(SoterraTenantTool):
 
 class IngestionJobsTool(SoterraTenantTool):
     name = "get_ingestion_jobs"
-    description = "Return report ingestion and extraction job status. Use for questions about upload processing, extraction failures, pending reports, extractor source, and raw text excerpts."
+    description = "Return report ingestion and extraction job status. Use for questions about upload processing, extraction failures, pending reports, and extractor source."
     inputs = {
         **SoterraTenantTool.inputs,
         "limit": {"type": "integer", "description": "Maximum number of jobs to return, capped at 50.", "nullable": True},
@@ -423,7 +421,6 @@ class IngestionJobsTool(SoterraTenantTool):
                         "extractor": item.get("extractor"),
                         "error": item.get("error_message"),
                         "errorMessage": item.get("error_message"),
-                        "rawTextExcerpt": (item.get("raw_text_excerpt") or "")[:700],
                         "started_at": item.get("started_at"),
                         "completed_at": item.get("completed_at"),
                         "startedAt": item.get("started_at"),
