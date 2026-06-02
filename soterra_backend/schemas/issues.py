@@ -8,6 +8,6 @@ from .base import StrictRequestModel
 
 
 class IssueUpdateRequest(StrictRequestModel):
-    status: Literal["Open", "Ready", "Closed"] | None = None
+    status: Literal["Open", "In Progress", "Needs Review", "Ready", "Closed"] | None = None
     reinspections: int | None = Field(default=None, ge=0, le=1000)
     lastSentTo: str | None = Field(default=None, max_length=254)

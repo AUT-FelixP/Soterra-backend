@@ -4,6 +4,7 @@ from fastapi import HTTPException
 
 from ..analytics import build_issue_detail, build_issues_list, build_tracker_page
 from ..repositories.base import RepositoryBackend
+from .work_package_service import build_todays_fix_list, build_work_packages
 
 
 class IssueService:
@@ -18,6 +19,13 @@ class IssueService:
         if not payload:
             raise HTTPException(status_code=404, detail="Issue not found")
         return payload
+
+    def work_packages(self, *, tenant_id: str) -> dict:
+        snapshot = self.repository.load_snapshot(tenant_id)
+        return {"items": build_work_packages(snapshot.findings)}
+
+    def todays_fix_list(self, *, tenant_id: str) -> dict:
+        return build_todays_fix_list(self.repository.load_snapshot(tenant_id).findings)
 
     def update_issue(
         self,

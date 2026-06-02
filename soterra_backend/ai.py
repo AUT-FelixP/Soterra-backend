@@ -26,7 +26,10 @@ def extract_with_openai(
     client = OpenAI(api_key=settings.openai_api_key)
 
     system_prompt = (
-        "Extract construction inspection metadata and action-required defects from the provided report. "
+        "Extract construction inspection metadata and actionable defect records from the provided report. "
+        "Each finding must say what is wrong, where it is, which trade owns it, what must be fixed, "
+        "what close-out evidence is required, and the source document/page/quote where available. "
+        "If you infer trade, location, or severity, add an extraction warning and lower confidence. "
         "Return only valid JSON matching the requested schema. Do not invent missing facts. "
         "If a report says an item is acceptable or looks okay, do not create a finding for it."
     )

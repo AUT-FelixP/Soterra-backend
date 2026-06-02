@@ -11,6 +11,7 @@ from .prompts import SOTERRA_AGENT_SYSTEM_PROMPT
 from .schemas import AgentChatResponse, AgentRelatedEntities
 from .tools import build_soterra_tools
 from ..repository import RepositoryBackend
+from ..services.work_package_service import build_chat_cards, build_todays_fix_list, build_work_packages
 from ..utils import safe_int
 
 logger = logging.getLogger(__name__)
@@ -171,6 +172,8 @@ class SoterraAgentService:
             )
 
         related = self._related_entities(answer, report_id=report_id, issue_id=issue_id, project_slug=project_slug)
+        mode = classify_mode(message)
+        structured_response = build_chat_cards(self.repository.load_snapshot(tenant_id).findings, mode=mode)
         confidence = self._confidence(used_tools, answer, report_id=report_id, issue_id=issue_id, project_slug=project_slug)
         if fallback_error and confidence == "high":
             confidence = "medium"
@@ -192,6 +195,8 @@ class SoterraAgentService:
             suggested_follow_ups=self._suggested_follow_ups(answer),
             related_entities=related,
             confidence=confidence,
+            mode=mode,
+            structured_response=structured_response,
         )
 
     def list_sessions(self, *, tenant_id: str, user_id: str) -> list[dict]:
@@ -375,11 +380,17 @@ class SoterraAgentService:
         if _is_off_domain_question(normalized):
             return _answer_off_domain()
         inferred_project = project_slug or _infer_project_slug_from_history(history)
+        if classify_mode(message) == "evidence_mode":
+            payload = tools["get_work_packages"].forward(tenant_id)
+            return build_evidence_answer(payload)
+        if "today" in normalized and "fix" in normalized:
+            payload = tools["get_todays_fix_list"].forward(tenant_id)
+            return build_todays_fix_list_answer(payload)
         if intent in {AgentIntent.LIST_OPEN_ISSUES, AgentIntent.URGENT_ISSUES, AgentIntent.ISSUE_LOCATION_LIST}:
             payload = tools["list_open_issues"].forward(tenant_id, inferred_project)
             if intent == AgentIntent.URGENT_ISSUES:
                 tools["get_tracker_state"].forward(tenant_id)
-            return build_issue_table_answer(payload)
+            return build_issue_table_answer(payload, include_full_register=classify_mode(message) == "full_register_mode")
         if intent == AgentIntent.ISSUE_STATUS_UPDATE_HELP and _asks_issue_due_question(normalized, history):
             payload = tools["list_open_issues"].forward(tenant_id, inferred_project)
             return build_issue_due_answer(payload)
@@ -655,6 +666,23 @@ def classify_intent(
     return AgentIntent.GENERAL_AGENT_QUERY
 
 
+def classify_mode(message: str) -> str:
+    normalized = message.lower()
+    if any(term in normalized for term in ["show all", "full list", "full register", "every issue"]):
+        return "full_register_mode"
+    if any(term in normalized for term in ["evidence", "photos", "sign-off", "sign off", "documents needed"]):
+        return "evidence_mode"
+    if any(term in normalized for term in ["by trade", "responsible trade", "which trade"]):
+        return "trade_mode"
+    if any(term in normalized for term in ["by location", "by level", "by unit", "which area"]):
+        return "location_mode"
+    if any(term in normalized for term in ["risk", "block inspection", "block handover"]):
+        return "risk_mode"
+    if any(term in normalized for term in ["fix first", "today", "action plan", "priority"]):
+        return "action_plan_mode"
+    return "summary_mode"
+
+
 def is_vague_answer(answer: str, intent: AgentIntent) -> bool:
     lowered = answer.lower()
     vague_phrases = [
@@ -898,7 +926,7 @@ def _answer_from_dashboard_summary(payload: dict) -> str:
     return f"Current dashboard summary: {metric_text}. Suggested next action: review open issues and upcoming risks before reinspection."
 
 
-def build_issue_table_answer(payload: dict) -> str:
+def build_issue_table_answer(payload: dict, *, include_full_register: bool = False) -> str:
     issues = payload.get("issues") or []
     project = payload.get("project_name") or "this account"
     address = payload.get("project_address") or "address not specified"
@@ -907,13 +935,24 @@ def build_issue_table_answer(payload: dict) -> str:
     overdue = payload.get("overdue_open", 0)
     if not issues:
         return f"No open issues are available for {project} in the active records for your current account."
+    packages = build_work_packages(issues, limit=3)
     lines = [
         f"Yes - I found {total_open} open issues for {project} at {address}. {high} are high priority and {overdue} are overdue.",
         "",
-        "| Priority | Issue | Location | Trade | Source | Recommended action |",
-        "|---|---|---|---|---|---|",
+        "Main work packages:",
     ]
-    for issue in issues[:15]:
+    for index, package in enumerate(packages, start=1):
+        lines.extend(
+            [
+                f"{index}. {package['group_title']}",
+                f"   Trade: {package['trade']}",
+                f"   Includes: {package['summary']}",
+                f"   Fix: {package['recommended_action']}",
+            ]
+        )
+    lines.extend(["", "Issue examples (up to 5):", "| Priority | Issue | Location | Trade | Source | Recommended action |", "|---|---|---|---|---|---|"])
+    issue_limit = len(issues) if include_full_register else 5
+    for issue in issues[:issue_limit]:
         lines.append(
             "| {priority} | {title} | {location} | {trade} | {source} | {action} |".format(
                 priority=_cell(issue.get("priority") or issue.get("severity")),
@@ -925,8 +964,8 @@ def build_issue_table_answer(payload: dict) -> str:
             )
         )
     remaining = safe_int(payload.get("remaining_count"))
-    if remaining:
-        lines.append(f"\nShowing the first {min(len(issues), 15)} issues; {remaining} more remain in the tracker.")
+    if not include_full_register and (remaining or len(issues) > 5):
+        lines.append(f"\nShowing {min(len(issues), 5)} issue examples; ask for the full register to see all {total_open}.")
     lines.extend(
         [
             "",
@@ -936,6 +975,33 @@ def build_issue_table_answer(payload: dict) -> str:
             "3. Resolve services coordination clashes by trade.",
         ]
     )
+    return "\n".join(lines)
+
+
+def build_todays_fix_list_answer(payload: dict) -> str:
+    items = payload.get("items") or []
+    if not items:
+        return "There are no open issues for today's fix list."
+    lines = ["Today's Fix List:"]
+    for item in items[:5]:
+        lines.extend(
+            [
+                f"{item.get('priority')}. {item.get('trade')} - {item.get('location')}",
+                f"   Task: {item.get('task')}",
+                f"   Evidence: {', '.join(item.get('evidence_required') or [])}",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def build_evidence_answer(payload: dict) -> str:
+    packages = payload.get("items") or []
+    if not packages:
+        return "I do not see open issues that need close-out evidence."
+    lines = ["Evidence needed for close-out:"]
+    for package in packages[:5]:
+        lines.append(f"- {package.get('group_title')}: {', '.join(package.get('evidence_required') or [])}.")
+    lines.append("Use labelled after photos so the reviewer can match each item to its location.")
     return "\n".join(lines)
 
 

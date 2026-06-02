@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 Severity = Literal["Low", "Medium", "High", "Critical"]
-IssueStatus = Literal["Open", "Ready", "Closed"]
+IssueStatus = Literal["Open", "In Progress", "Closed", "Needs Review", "Ready"]
 ReportStatus = Literal["Reviewing", "Completed", "In progress"]
 RiskLevel = Literal["Low", "Medium", "High"]
 TenantRole = Literal["admin", "member"]
@@ -26,6 +26,20 @@ class ExtractedFinding(StrictSchemaModel):
     unit_label: str | None = Field(default=None, max_length=80)
     status: IssueStatus = "Open"
     recurrence_risk: int = Field(default=30, ge=0, le=100)
+    project_name: str | None = Field(default=None, max_length=160)
+    issue_title: str | None = Field(default=None, max_length=240)
+    plain_english_summary: str | None = None
+    level: str | None = Field(default=None, max_length=80)
+    unit_or_area: str | None = Field(default=None, max_length=160)
+    inspection_type: str | None = Field(default=None, max_length=120)
+    root_cause: str | None = Field(default=None, max_length=240)
+    required_fix: str | None = None
+    evidence_required: list[str] = Field(default_factory=list)
+    source_document: str | None = Field(default=None, max_length=240)
+    source_page: int | None = Field(default=None, ge=1)
+    source_quote: str | None = None
+    confidence: float = Field(default=0.5, ge=0, le=1)
+    extraction_warnings: list[str] = Field(default_factory=list)
 
 
 class PredictedInspection(StrictSchemaModel):

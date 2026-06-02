@@ -9,6 +9,7 @@ import fitz
 
 from ..config import Settings
 from ..demo_extractions import fallback_demo_extraction
+from ..extraction_quality import finalize_extraction
 from ..models import ExtractedFinding, ExtractionResult, PredictedInspection
 from ..text_extraction import extract_embedded_text
 from ..utils import parse_report_date, plus_days
@@ -80,6 +81,7 @@ class DoctrRulesPresidioExtractor:
         extraction = _build_rule_extraction(request, raw_text)
         if not extraction.findings:
             extraction = fallback_demo_extraction(request.filename, raw_text)
+        extraction = finalize_extraction(extraction, request.filename)
 
         return ExtractionArtifacts(
             extraction=extraction,

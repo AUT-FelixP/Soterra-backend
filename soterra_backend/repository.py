@@ -201,6 +201,7 @@ class SqliteRepository:
         self._ensure_auth_tables(connection)
         self._ensure_tenant_columns(connection)
         self._ensure_document_columns(connection)
+        self._ensure_finding_columns(connection)
         if indexes_sql.strip():
             connection.executescript(indexes_sql)
         self._refresh_views(connection)
@@ -613,9 +614,11 @@ class SqliteRepository:
                     """
                     INSERT INTO findings (
                       id, tenant_id, document_id, project_id, title, description, category, trade, severity,
-                      status, location, unit_label, recurrence_risk, reinspections, last_sent_to,
-                      created_at, closed_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                      status, location, unit_label, project_name, issue_title, plain_english_summary, level,
+                      unit_or_area, inspection_type, root_cause, required_fix, evidence_required_json,
+                      source_document, source_page, source_quote, confidence, extraction_warnings_json,
+                      recurrence_risk, reinspections, last_sent_to, created_at, closed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         create_id("issue"),
@@ -630,6 +633,20 @@ class SqliteRepository:
                         finding.status,
                         finding.location,
                         finding.unit_label,
+                        finding.project_name,
+                        finding.issue_title,
+                        finding.plain_english_summary,
+                        finding.level,
+                        finding.unit_or_area,
+                        finding.inspection_type,
+                        finding.root_cause,
+                        finding.required_fix,
+                        json.dumps(finding.evidence_required),
+                        finding.source_document,
+                        finding.source_page,
+                        finding.source_quote,
+                        finding.confidence,
+                        json.dumps(finding.extraction_warnings),
                         finding.recurrence_risk,
                         0,
                         None,
@@ -971,6 +988,28 @@ class SqliteRepository:
         connection.execute("CREATE INDEX IF NOT EXISTS idx_documents_file_hash ON documents(tenant_id, file_hash)")
         connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_tenant_file_hash_unique ON documents(tenant_id, file_hash)")
         connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_tenant_file_tag_unique ON documents(tenant_id, file_tag)")
+
+    def _ensure_finding_columns(self, connection: sqlite3.Connection) -> None:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(findings)")}
+        additions = {
+            "project_name": "TEXT",
+            "issue_title": "TEXT",
+            "plain_english_summary": "TEXT",
+            "level": "TEXT",
+            "unit_or_area": "TEXT",
+            "inspection_type": "TEXT",
+            "root_cause": "TEXT",
+            "required_fix": "TEXT",
+            "evidence_required_json": "TEXT NOT NULL DEFAULT '[]'",
+            "source_document": "TEXT",
+            "source_page": "INTEGER",
+            "source_quote": "TEXT",
+            "confidence": "REAL NOT NULL DEFAULT 0.5",
+            "extraction_warnings_json": "TEXT NOT NULL DEFAULT '[]'",
+        }
+        for name, sql_type in additions.items():
+            if name not in columns:
+                connection.execute(f"ALTER TABLE findings ADD COLUMN {name} {sql_type}")
 
     def _documents_have_global_file_uniques(self, connection: sqlite3.Connection) -> bool:
         for index in connection.execute("PRAGMA index_list(documents)").fetchall():
@@ -1606,6 +1645,20 @@ class SupabaseRepository:
                     "status": finding.status,
                     "location": finding.location,
                     "unit_label": finding.unit_label,
+                    "project_name": finding.project_name,
+                    "issue_title": finding.issue_title,
+                    "plain_english_summary": finding.plain_english_summary,
+                    "level": finding.level,
+                    "unit_or_area": finding.unit_or_area,
+                    "inspection_type": finding.inspection_type,
+                    "root_cause": finding.root_cause,
+                    "required_fix": finding.required_fix,
+                    "evidence_required_json": finding.evidence_required,
+                    "source_document": finding.source_document,
+                    "source_page": finding.source_page,
+                    "source_quote": finding.source_quote,
+                    "confidence": finding.confidence,
+                    "extraction_warnings_json": finding.extraction_warnings,
                     "recurrence_risk": finding.recurrence_risk,
                     "reinspections": 0,
                     "last_sent_to": None,
@@ -1698,6 +1751,8 @@ class SupabaseRepository:
             normalized_findings.append(
                 {
                     **row,
+                    "evidence_required": row.get("evidence_required_json") or [],
+                    "extraction_warnings": row.get("extraction_warnings_json") or [],
                     "project_name": project.get("name", "Unknown project"),
                     "project_slug": project.get("slug", "unknown-project"),
                     "site_name": project.get("site_name", "Unknown site"),
@@ -2040,7 +2095,10 @@ def _normalize_document(row: sqlite3.Row) -> dict:
 
 
 def _normalize_finding(row: sqlite3.Row) -> dict:
-    return _dict(row)
+    payload = _dict(row)
+    payload["evidence_required"] = json.loads(payload.pop("evidence_required_json", "[]") or "[]")
+    payload["extraction_warnings"] = json.loads(payload.pop("extraction_warnings_json", "[]") or "[]")
+    return payload
 
 
 def _slug(value: str) -> str:

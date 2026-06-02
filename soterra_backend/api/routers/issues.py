@@ -17,6 +17,22 @@ def list_issues(
     return service.list_issues(tenant_id=context.tenant_id)
 
 
+@router.get("/work-packages")
+def list_work_packages(
+    context: AuthContext = Depends(get_auth_context),
+    service: IssueService = Depends(get_issue_service),
+) -> dict:
+    return service.work_packages(tenant_id=context.tenant_id)
+
+
+@router.get("/todays-fix-list")
+def todays_fix_list(
+    context: AuthContext = Depends(get_auth_context),
+    service: IssueService = Depends(get_issue_service),
+) -> dict:
+    return service.todays_fix_list(tenant_id=context.tenant_id)
+
+
 @router.get("/{issue_id}")
 def get_issue(
     issue_id: str,

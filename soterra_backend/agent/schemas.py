@@ -34,6 +34,8 @@ class AgentChatResponse(AgentStrictModel):
     suggested_follow_ups: list[str] = Field(default_factory=list)
     related_entities: AgentRelatedEntities = Field(default_factory=AgentRelatedEntities)
     confidence: Literal["low", "medium", "high"]
+    mode: Literal["summary_mode", "action_plan_mode", "trade_mode", "location_mode", "evidence_mode", "risk_mode", "full_register_mode"] = "summary_mode"
+    structured_response: dict = Field(default_factory=dict)
 
 
 class AgentChatSessionSummary(AgentStrictModel):

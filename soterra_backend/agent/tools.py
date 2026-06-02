@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from datetime import date
 from typing import Any, Callable
 
 from ..analytics import (
@@ -21,6 +22,7 @@ from ..analytics import (
 )
 from ..models import RepositorySnapshot
 from ..repository import RepositoryBackend
+from ..services.work_package_service import build_todays_fix_list, build_work_packages
 from ..utils import safe_int
 
 try:
@@ -51,7 +53,7 @@ def build_soterra_tools(
         for tool in (
             ApiRouteCatalogTool, SchemaCatalogTool, BackendCatalogTool, DataSchemaCatalogTool,
             TenantMembersTool, ProjectCatalogTool, IngestionJobsTool, IssueAnalyticsTool,
-            SummarizeReportsTool, ListOpenIssuesTool, TrackerStateTool, DashboardMetricsTool,
+            SummarizeReportsTool, ListOpenIssuesTool, WorkPackagesTool, TodaysFixListTool, TrackerStateTool, DashboardMetricsTool,
             RiskSummaryTool, ReportsSummaryTool, ReportDetailTool, TrackerSummaryTool,
             IssueDetailTool, DashboardSummaryTool, CompanyMetricsTool, PerformanceMetricsTool,
             ProjectMetricsTool, DashboardRiskTool, LiveTrackerTool, TopFailuresTool,
@@ -572,7 +574,7 @@ class ListOpenIssuesTool(SoterraTenantTool):
         issues = [_issue_payload(item, docs.get(item.get("document_id"), {})) for item in sorted(open_findings, key=_priority_rank)[:capped]]
         project = _dominant_project(open_findings, snapshot.projects)
         high = [item for item in open_findings if item.get("severity") in {"High", "Critical"}]
-        overdue = [item for item in open_findings if _days_open(item) > 7]
+        overdue = [item for item in open_findings if _is_explicitly_overdue(item)]
         return {
             "project_name": project.get("name") or (issues[0].get("project_name") if issues else None),
             "project_slug": project.get("slug") or (issues[0].get("project_slug") if issues else None),
@@ -608,6 +610,28 @@ class TrackerStateTool(SoterraTenantTool):
             "by_trade": dict(Counter(item.get("trade", "General") for item in snapshot.findings)),
             "issues": issues[:50],
         }
+
+
+class WorkPackagesTool(SoterraTenantTool):
+    name = "get_work_packages"
+    description = "Return active construction issues grouped into practical trade work packages."
+
+    def forward(self, tenant_id: str) -> dict:
+        if mismatch := self._check_tenant(tenant_id):
+            return mismatch
+        self._record()
+        return {"items": build_work_packages(self._snapshot().findings)}
+
+
+class TodaysFixListTool(SoterraTenantTool):
+    name = "get_todays_fix_list"
+    description = "Return a short ordered site fix list grouped by responsible trade and location."
+
+    def forward(self, tenant_id: str) -> dict:
+        if mismatch := self._check_tenant(tenant_id):
+            return mismatch
+        self._record()
+        return build_todays_fix_list(self._snapshot().findings)
 
 
 class DashboardMetricsTool(SoterraTenantTool):
@@ -1153,6 +1177,16 @@ def _issue_payload(item: dict, document: dict) -> dict:
         "due_date": due_date,
         "dueDate": due_date,
         "linkedReport": item.get("document_id"),
+        "project_name": item.get("project_name") or document.get("project_name"),
+        "inspection_type": item.get("inspection_type") or document.get("inspection_type"),
+        "root_cause": item.get("root_cause") or item.get("category"),
+        "required_fix": item.get("required_fix") or _recommended_action(title, item),
+        "evidence_required": item.get("evidence_required") or [],
+        "source_document": item.get("source_document") or source_title,
+        "source_page": item.get("source_page"),
+        "source_quote": item.get("source_quote"),
+        "confidence": item.get("confidence"),
+        "extraction_warnings": item.get("extraction_warnings") or [],
     }
 
 
@@ -1162,6 +1196,11 @@ def _issue_due_date(item: dict) -> str | None:
         if value:
             return str(value)[:10]
     return None
+
+
+def _is_explicitly_overdue(item: dict) -> bool:
+    due_date = _issue_due_date(item)
+    return bool(due_date and due_date < date.today().isoformat())
 
 
 def _normalise_location(item: dict, document: dict) -> str:
@@ -1220,7 +1259,7 @@ def _recommended_action(title: str, item: dict) -> str:
         return "Re-coordinate services to remove clashes, maintain clearance, and record QA evidence."
     if "lagging" in text:
         return "Install required acoustic lagging and provide photo evidence."
-    return "Assign the responsible trade, rectify the item, and upload close-out evidence."
+    return "Rectify the recorded defect against the approved detail and upload after photos for review."
 
 
 def _report_title(document: dict) -> str:

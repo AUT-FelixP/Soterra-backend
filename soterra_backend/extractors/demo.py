@@ -4,6 +4,7 @@ import hashlib
 from pathlib import Path
 
 from ..demo_extractions import fallback_demo_extraction, match_demo_extraction
+from ..extraction_quality import finalize_extraction
 from ..text_extraction import extract_embedded_text
 from .base import ExtractionArtifacts, ExtractionRequest
 
@@ -17,13 +18,13 @@ class DemoExtractor:
         demo_match = match_demo_extraction(request.filename, raw_text)
         if demo_match:
             return ExtractionArtifacts(
-                extraction=demo_match,
+                extraction=finalize_extraction(demo_match, request.filename),
                 raw_text=raw_text,
                 extractor_name=f"demo:{_document_signature(request.content)}:{extraction_source}",
             )
 
         return ExtractionArtifacts(
-            extraction=fallback_demo_extraction(request.filename, raw_text),
+            extraction=finalize_extraction(fallback_demo_extraction(request.filename, raw_text), request.filename),
             raw_text=raw_text,
             extractor_name=f"demo-fallback:{extraction_source}",
         )
