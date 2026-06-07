@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS projects (
   name TEXT NOT NULL,
   site_name TEXT NOT NULL,
   address TEXT,
+  project_lifecycle TEXT NOT NULL DEFAULT 'active' CHECK (project_lifecycle IN ('active', 'completed', 'closed', 'archived')),
   created_at TEXT NOT NULL
 );
 

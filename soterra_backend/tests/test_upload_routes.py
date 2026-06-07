@@ -207,6 +207,7 @@ class UploadAndRoutesTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.get("/dashboard/company", headers=self.auth_headers)).status_code, 200)
         self.assertEqual((await self.client.get("/dashboard/performance", headers=self.auth_headers)).status_code, 200)
         self.assertEqual((await self.client.get("/dashboard/insights", headers=self.auth_headers)).status_code, 200)
+        self.assertEqual((await self.client.get("/dashboard/insights/ai", headers=self.auth_headers)).status_code, 200)
         self.assertEqual((await self.client.get("/dashboard/live-tracker", headers=self.auth_headers)).status_code, 200)
         self.assertEqual((await self.client.get("/dashboard/top-failures", headers=self.auth_headers)).status_code, 200)
         self.assertEqual((await self.client.get("/dashboard/upcoming-risk", headers=self.auth_headers)).status_code, 200)

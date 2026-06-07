@@ -3,7 +3,14 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 
 from ...services.dashboard_service import DashboardService
-from ..dependencies import AuthContext, get_auth_context, get_dashboard_service, require_tenant_data_access
+from ...services.insights_agent_service import InsightsAgentService
+from ..dependencies import (
+    AuthContext,
+    get_auth_context,
+    get_dashboard_service,
+    get_insights_agent_service,
+    require_tenant_data_access,
+)
 
 router = APIRouter(dependencies=[Depends(require_tenant_data_access)])
 
@@ -40,6 +47,15 @@ def dashboard_insights(
     service: DashboardService = Depends(get_dashboard_service),
 ) -> dict:
     return service.insights(tenant_id=context.tenant_id, inspection_type=inspectionType)
+
+
+@router.get("/dashboard/insights/ai")
+def dashboard_ai_insights(
+    inspectionType: str = "All",
+    context: AuthContext = Depends(get_auth_context),
+    service: InsightsAgentService = Depends(get_insights_agent_service),
+) -> dict:
+    return service.build_ai_insights(tenant_id=context.tenant_id, inspection_type=inspectionType)
 
 
 @router.get("/insights")

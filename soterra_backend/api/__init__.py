@@ -9,7 +9,7 @@ from ..agent import SoterraAgentService
 from ..config import Settings
 from ..email_service import EmailService
 from ..repository import build_repository
-from ..services import DashboardService, IssueService
+from ..services import DashboardService, InsightsAgentService, IssueService
 from ..services.report_service import ReportIngestionService, ReportUploadService
 from ..storage import build_storage
 from .routers import agent, auth, dashboard, health, issues, reports, tracker
@@ -44,6 +44,11 @@ def create_app() -> FastAPI:
     issue_service = IssueService(repository)
     dashboard_service = DashboardService(repository)
     agent_service = SoterraAgentService(repository=repository)
+    insights_agent_service = InsightsAgentService(
+        repository=repository,
+        agent_service=agent_service,
+        settings=settings,
+    )
 
     app = FastAPI(
         title="Soterra Backend",
@@ -61,6 +66,7 @@ def create_app() -> FastAPI:
     app.state.issue_service = issue_service
     app.state.dashboard_service = dashboard_service
     app.state.agent_service = agent_service
+    app.state.insights_agent_service = insights_agent_service
 
     register_auth_middleware(app)
     register_routers(app)

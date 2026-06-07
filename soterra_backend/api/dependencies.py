@@ -8,7 +8,7 @@ from ..agent import SoterraAgentService
 from ..email_service import EmailService
 from ..models import AuthSession
 from ..repositories.base import RepositoryBackend
-from ..services import DashboardService, IssueService, ReportUploadService
+from ..services import DashboardService, InsightsAgentService, IssueService, ReportUploadService
 from ..storage.base import StorageBackend
 
 @dataclass(frozen=True)
@@ -77,3 +77,7 @@ def get_dashboard_service(request: Request) -> DashboardService:
 
 def get_agent_service(request: Request) -> SoterraAgentService:
     return request.app.state.agent_service
+
+
+def get_insights_agent_service(request: Request) -> InsightsAgentService:
+    return request.app.state.insights_agent_service

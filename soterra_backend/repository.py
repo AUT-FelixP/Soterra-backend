@@ -200,6 +200,7 @@ class SqliteRepository:
         self._drop_analytics_views(connection)
         self._ensure_auth_tables(connection)
         self._ensure_tenant_columns(connection)
+        self._ensure_project_columns(connection)
         self._ensure_document_columns(connection)
         self._ensure_finding_columns(connection)
         if indexes_sql.strip():
@@ -949,6 +950,11 @@ class SqliteRepository:
         finally:
             connection.close()
 
+    def _ensure_project_columns(self, connection: sqlite3.Connection) -> None:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(projects)")}
+        if "project_lifecycle" not in columns:
+            connection.execute("ALTER TABLE projects ADD COLUMN project_lifecycle TEXT NOT NULL DEFAULT 'active'")
+
     def _ensure_document_columns(self, connection: sqlite3.Connection) -> None:
         columns = {row["name"] for row in connection.execute("PRAGMA table_info(documents)")}
         if "file_hash" not in columns:
@@ -1223,7 +1229,8 @@ class SupabaseRepository:
         self.session_ttl_hours = session_ttl_hours
         self._memory_password_reset_tokens: dict[str, dict] = {}
         try:
-            from supabase import create_client
+            import httpx
+            from supabase import ClientOptions, create_client
         except ModuleNotFoundError as exc:
             raise RuntimeError(
                 "The supabase package is not installed. Run the Python dependency install step first."
@@ -1231,7 +1238,11 @@ class SupabaseRepository:
 
         # The service-role client bypasses Supabase RLS. Every tenant-owned query below
         # must therefore include an explicit tenant_id filter.
-        self.client = create_client(url, service_role_key)
+        self.client = create_client(
+            url,
+            service_role_key,
+            options=ClientOptions(httpx_client=httpx.Client(http2=False, timeout=120)),
+        )
 
     def initialize(self) -> None:
         return None
@@ -1738,6 +1749,7 @@ class SupabaseRepository:
                     **row,
                     "project_name": project.get("name", "Unknown project"),
                     "project_slug": project.get("slug", "unknown-project"),
+                    "project_lifecycle": project.get("project_lifecycle", "active"),
                     "site_name": row.get("site_name") or project.get("site_name", "Unknown site"),
                     "address": row.get("address") or project.get("address"),
                     "units": row.get("units_json") or [],
@@ -1755,6 +1767,7 @@ class SupabaseRepository:
                     "extraction_warnings": row.get("extraction_warnings_json") or [],
                     "project_name": project.get("name", "Unknown project"),
                     "project_slug": project.get("slug", "unknown-project"),
+                    "project_lifecycle": project.get("project_lifecycle", "active"),
                     "site_name": project.get("site_name", "Unknown site"),
                     "inspection_type": document.get("inspection_type", "Unknown inspection"),
                     "document_status": document.get("status", "Reviewing"),
@@ -1953,6 +1966,7 @@ SELECT
   d.*,
   p.name AS project_name,
   p.slug AS project_slug,
+  p.project_lifecycle AS project_lifecycle,
   COALESCE(d.site_name, p.site_name) AS site_name,
   COALESCE(d.address, p.address) AS address
 FROM documents d
@@ -1974,6 +1988,7 @@ SELECT
   f.*,
   p.name AS project_name,
   p.slug AS project_slug,
+  p.project_lifecycle AS project_lifecycle,
   COALESCE(d.site_name, p.site_name) AS site_name,
   d.inspection_type AS inspection_type,
   d.status AS document_status
