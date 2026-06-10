@@ -134,6 +134,8 @@ class InsightsAgentService:
             "filter": {"selected": selected, "options": options},
             "generatedAt": datetime.now(tz=UTC).isoformat(),
             "dataScope": "tenant",
+            "aiAvailable": False,
+            "fallbackMessage": "AI-enhanced insights are unavailable right now, so these recommendations use deterministic inspection analytics.",
             "confidenceNote": "Generated from tenant-scoped extracted findings. AI guidance falls back to deterministic analytics when the model is unavailable.",
             "executiveSummary": summary[:4],
             "currentProjectActions": current_actions,
@@ -220,6 +222,8 @@ def _repository_unavailable_response(selected: str) -> dict:
         "filter": {"selected": selected, "options": [selected] if selected != "All" else ["All"]},
         "generatedAt": datetime.now(tz=UTC).isoformat(),
         "dataScope": "tenant",
+        "aiAvailable": False,
+        "fallbackMessage": "AI-enhanced insights are unavailable because tenant inspection data could not be loaded.",
         "confidenceNote": "Tenant-scoped inspection data could not be loaded just now. Try refreshing; no cross-tenant data was used.",
         "executiveSummary": [
             "Inspection learning is temporarily unavailable because the tenant report snapshot could not be loaded.",
@@ -280,6 +284,8 @@ def _merge_ai_payload(fallback: dict, ai_payload: dict) -> dict:
     if "suggestedQuestions" not in merged and isinstance(ai_payload.get("suggestedAgentQuestions"), list):
         merged["suggestedQuestions"] = ai_payload["suggestedAgentQuestions"]
     merged["suggestedAgentQuestions"] = merged.get("suggestedQuestions") or merged.get("suggestedAgentQuestions") or []
+    merged["aiAvailable"] = True
+    merged["fallbackMessage"] = None
     merged["confidenceNote"] = "Generated from tenant-scoped extracted findings using Soterra AI, with deterministic analytics used as guardrails."
     return _coerce_response_shape(merged)
 

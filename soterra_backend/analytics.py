@@ -169,26 +169,40 @@ def build_insights_page(snapshot: RepositorySnapshot, inspection_type: str = "Al
 
     for row in _top_failure_driver_rows(findings, limit=8):
         matching = grouped.get(row["issue"], [])
-        highest_severity = "Low"
-        for item in matching:
-            if item["severity"] == "Critical":
-                highest_severity = "Critical"
-                break
-            if item["severity"] == "High":
-                highest_severity = "High"
-            elif item["severity"] == "Medium" and highest_severity == "Low":
-                highest_severity = "Medium"
+        highest_severity = _highest_severity(matching)
         repeated_patterns.append(
             {
                 "issue": row["issue"],
                 "occurrence": row["failureShare"],
+                "failureShare": row["failureShare"],
+                "failureShareValue": row["failureShareValue"],
+                "failCount": row["failCount"],
+                "occurrenceCount": row["failCount"],
                 "inspectionsAffected": str(row["inspections"]),
+                "affectedInspectionCount": row["inspections"],
+                "projectCount": row["projectCount"],
                 "highestSeverity": highest_severity,
+                "severityRank": _severity_rank(highest_severity),
+                "issueIds": [item["id"] for item in matching],
+                "reportIds": sorted({item["document_id"] for item in matching if item.get("document_id")}),
+                "reports": _report_refs(snapshot, matching),
+                "categories": [label for label, _ in Counter(item.get("category") or "General" for item in matching).most_common(3)],
+                "locations": [label for label, _ in Counter((item.get("location") or item.get("site_name") or "Project-wide") for item in matching).most_common(3)],
             }
         )
 
-    categories = Counter(item["category"] for item in findings)
-    locations = Counter((item.get("location") or item["site_name"]) for item in findings)
+    root_cause_items = _insight_group_items(
+        snapshot,
+        findings,
+        key_fn=lambda item: item.get("root_cause") or item.get("category") or "General",
+        filter_type="rootCause",
+    )
+    high_risk_area_items = _insight_group_items(
+        snapshot,
+        findings,
+        key_fn=lambda item: item.get("location") or item.get("site_name") or "Project-wide",
+        filter_type="highRiskArea",
+    )
 
     return {
         "title": "Insights",
@@ -197,9 +211,29 @@ def build_insights_page(snapshot: RepositorySnapshot, inspection_type: str = "Al
             "selected": inspection_type,
             "options": ["All inspection types"] + sorted({item["inspection_type"] for item in snapshot.findings}),
         },
-        "rootCauses": list(categories.keys())[:5] or ["No clear cause listed yet"],
-        "highRiskAreas": list(locations.keys())[:5] or ["Project-wide"],
+        "rootCauses": [item["label"] for item in root_cause_items] or ["No clear cause listed yet"],
+        "rootCauseItems": root_cause_items,
+        "highRiskAreas": [item["label"] for item in high_risk_area_items] or ["Project-wide"],
+        "highRiskAreaItems": high_risk_area_items,
         "repeatedPatterns": repeated_patterns,
+        "severityLegend": _severity_legend(),
+        "tableControls": {
+            "searchFields": ["issue", "categories", "locations"],
+            "sortOptions": [
+                {"value": "frequency", "label": "Frequency", "field": "occurrenceCount", "direction": "desc"},
+                {"value": "severity", "label": "Severity", "field": "severityRank", "direction": "desc"},
+                {"value": "affectedInspections", "label": "Affected inspections", "field": "affectedInspectionCount", "direction": "desc"},
+                {"value": "issue", "label": "Issue", "field": "issue", "direction": "asc"},
+            ],
+        },
+        "projectComparisons": _project_comparisons(findings),
+        "lessonsFromPastProjects": _lessons_from_past_projects(findings),
+        "export": {
+            "fileName": "inspection-insights-report.json",
+            "title": "Inspection insights report",
+            "sections": ["rootCauseItems", "highRiskAreaItems", "repeatedPatterns", "projectComparisons", "lessonsFromPastProjects"],
+            "shareText": "Inspection insights summary for team training.",
+        },
     }
 
 
@@ -690,16 +724,142 @@ def _top_failure_driver_rows(findings: list[dict], limit: int) -> list[dict]:
     total = max(len(findings), 1)
     rows = []
     for title, items in grouped.items():
+        fail_count = len(items)
         rows.append(
             {
                 "issue": title,
-                "failCount": len(items),
-                "failureShare": f"{round((len(items) / total) * 100)}%",
+                "failCount": fail_count,
+                "failureShare": f"{round((fail_count / total) * 100)}%",
+                "failureShareValue": round((fail_count / total) * 100, 1),
                 "inspections": len({item["document_id"] for item in items}),
+                "projectCount": len({item.get("project_slug") or item.get("project_name") for item in items}),
             }
         )
     rows.sort(key=lambda row: (-row["failCount"], row["issue"]))
     return rows[:limit]
+
+
+def _insight_group_items(snapshot: RepositorySnapshot, findings: list[dict], *, key_fn, filter_type: str) -> list[dict]:
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for item in findings:
+        grouped[str(key_fn(item) or "General")].append(item)
+    rows = []
+    for label, items in grouped.items():
+        reports = _report_refs(snapshot, items)
+        highest_severity = _highest_severity(items)
+        rows.append(
+            {
+                "label": label,
+                "count": len(items),
+                "issueCount": len(items),
+                "affectedInspectionCount": len({item.get("document_id") for item in items if item.get("document_id")}),
+                "projectCount": len({item.get("project_slug") or item.get("project_name") for item in items}),
+                "highestSeverity": highest_severity,
+                "severityRank": _severity_rank(highest_severity),
+                "issueIds": [item["id"] for item in items],
+                "reportIds": [report["id"] for report in reports],
+                "reports": reports,
+                "tableFilter": {"type": filter_type, "value": label},
+            }
+        )
+    rows.sort(key=lambda row: (-row["count"], -row["severityRank"], row["label"]))
+    return rows[:5]
+
+
+def _report_refs(snapshot: RepositorySnapshot, findings: list[dict]) -> list[dict]:
+    documents = {document["id"]: document for document in snapshot.documents}
+    refs = []
+    for document_id in sorted({item.get("document_id") for item in findings if item.get("document_id")}):
+        document = documents.get(document_id)
+        refs.append(
+            {
+                "id": document_id,
+                "project": (document or {}).get("project_name") or _first_matching_value(findings, document_id, "project_name"),
+                "site": (document or {}).get("site_name") or _first_matching_value(findings, document_id, "site_name"),
+                "inspectionType": (document or {}).get("inspection_type") or _first_matching_value(findings, document_id, "inspection_type"),
+                "reportDate": (document or {}).get("report_date"),
+            }
+        )
+    return refs
+
+
+def _first_matching_value(findings: list[dict], document_id: str, key: str) -> str | None:
+    for item in findings:
+        if item.get("document_id") == document_id and item.get(key):
+            return str(item[key])
+    return None
+
+
+def _highest_severity(items: list[dict]) -> str:
+    highest = "Low"
+    for item in items:
+        severity = item.get("severity") if item.get("severity") in {"Low", "Medium", "High", "Critical"} else "Low"
+        if _severity_rank(severity) > _severity_rank(highest):
+            highest = severity
+    return highest
+
+
+def _severity_rank(severity: str) -> int:
+    return {"Low": 1, "Medium": 2, "High": 3, "Critical": 4}.get(severity, 1)
+
+
+def _severity_legend() -> list[dict]:
+    return [
+        {"level": "Medium", "meaning": "Needs planned attention before inspection.", "recommendedAction": "Assign an owner and prepare close-out evidence."},
+        {"level": "High", "meaning": "Likely to affect sign-off or trigger reinspection.", "recommendedAction": "Prioritise the fix and verify before booking inspection."},
+        {"level": "Critical", "meaning": "Highest-risk issue with urgent inspection impact.", "recommendedAction": "Escalate immediately, close the issue, and collect evidence before sign-off."},
+    ]
+
+
+def _project_comparisons(findings: list[dict]) -> list[dict]:
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for item in findings:
+        grouped[item.get("project_name") or "Unknown project"].append(item)
+    rows = []
+    for project, items in grouped.items():
+        top_issues = [
+            {"issue": issue, "count": count}
+            for issue, count in Counter(item.get("title") or "Untitled finding" for item in items).most_common(3)
+        ]
+        rows.append(
+            {
+                "project": project,
+                "lifecycle": _project_lifecycle(items[0]),
+                "issueCount": len(items),
+                "openIssueCount": len([item for item in items if item.get("status") != "Closed"]),
+                "topIssues": top_issues,
+                "dominantRootCause": Counter(item.get("root_cause") or item.get("category") or "General" for item in items).most_common(1)[0][0],
+            }
+        )
+    rows.sort(key=lambda row: (-row["issueCount"], row["project"]))
+    return rows
+
+
+def _lessons_from_past_projects(findings: list[dict]) -> list[dict]:
+    historical = [item for item in findings if _project_lifecycle(item) in {"completed", "closed", "archived"}]
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for item in historical:
+        grouped[item.get("root_cause") or item.get("category") or item.get("trade") or "General"].append(item)
+    lessons = []
+    for cause, items in sorted(grouped.items(), key=lambda pair: (-len(pair[1]), pair[0]))[:6]:
+        projects = sorted({item.get("project_name") for item in items if item.get("project_name")})
+        issues = [issue for issue, _ in Counter(item.get("title") or "Inspection finding" for item in items).most_common(3)]
+        lessons.append(
+            {
+                "title": f"{cause} showed up in past projects",
+                "issueCount": len(items),
+                "projectCount": len(projects),
+                "seenInProjects": projects[:5],
+                "recurringIssues": issues,
+                "recommendation": "Add this pattern to team training and pre-inspection QA checklists for new projects.",
+            }
+        )
+    return lessons
+
+
+def _project_lifecycle(item: dict) -> str:
+    value = str(item.get("project_lifecycle") or item.get("project_status") or item.get("lifecycle") or "active").strip().lower()
+    return value if value in {"active", "completed", "closed", "archived"} else "active"
 
 
 def _failure_distribution(findings: list[dict]) -> list[dict]:

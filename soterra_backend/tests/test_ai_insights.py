@@ -175,6 +175,8 @@ class InsightsAgentServiceTest(unittest.TestCase):
 
         self.assertEqual(repo.loaded_tenant_ids, ["ten-a"])
         self.assertEqual(payload["dataScope"], "tenant")
+        self.assertFalse(payload["aiAvailable"])
+        self.assertIn("unavailable", payload["fallbackMessage"])
         self.assertEqual(payload["filter"]["selected"], "All")
         for key in [
             "executiveSummary",
@@ -261,6 +263,8 @@ class InsightsAgentServiceTest(unittest.TestCase):
         payload = service.build_ai_insights(tenant_id="ten-a", inspection_type="All")
 
         self.assertIn("deterministic analytics", payload["confidenceNote"])
+        self.assertFalse(payload["aiAvailable"])
+        self.assertIn("unavailable", payload["fallbackMessage"])
         self.assertTrue(payload["preInspectionChecklist"])
 
     def test_repository_disconnect_returns_valid_response_instead_of_500(self) -> None:
@@ -271,6 +275,7 @@ class InsightsAgentServiceTest(unittest.TestCase):
 
         self.assertEqual(repo.calls, 2)
         self.assertEqual(payload["dataScope"], "tenant")
+        self.assertFalse(payload["aiAvailable"])
         self.assertIn("could not be loaded", payload["confidenceNote"])
         self.assertEqual(payload["learningInsights"], [])
 
@@ -281,6 +286,8 @@ class InsightsAgentServiceTest(unittest.TestCase):
         payload = service.build_ai_insights(tenant_id="ten-a", inspection_type="All")
 
         self.assertEqual(payload["executiveSummary"], ["Check evidence gaps before booking the inspection."])
+        self.assertTrue(payload["aiAvailable"])
+        self.assertIsNone(payload["fallbackMessage"])
         self.assertIn("project_name", agent.prompt)
         self.assertNotIn("source_filename", agent.prompt)
         self.assertNotIn("Secret Other Tenant", agent.prompt)
