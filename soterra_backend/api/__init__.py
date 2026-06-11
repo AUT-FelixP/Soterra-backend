@@ -10,6 +10,7 @@ from ..config import Settings
 from ..email_service import EmailService
 from ..repository import build_repository
 from ..services import DashboardService, InsightsAgentService, IssueService
+from ..services.malware import NoopMalwareScanner
 from ..services.report_service import ReportIngestionService, ReportUploadService
 from ..storage import build_storage
 from .routers import agent, auth, dashboard, health, issues, reports, tracker
@@ -29,6 +30,7 @@ def create_app() -> FastAPI:
     repository = build_repository(settings)
     repository.initialize()
     storage = build_storage(settings)
+    malware_scanner = NoopMalwareScanner()
     email_service = EmailService(settings)
     ingestion_service = ReportIngestionService(
         settings=settings,
@@ -40,6 +42,7 @@ def create_app() -> FastAPI:
         repository=repository,
         storage=storage,
         ingestion_service=ingestion_service,
+        malware_scanner=malware_scanner,
     )
     issue_service = IssueService(repository)
     dashboard_service = DashboardService(repository)
@@ -60,6 +63,7 @@ def create_app() -> FastAPI:
     app.state.settings = settings
     app.state.repository = repository
     app.state.storage = storage
+    app.state.malware_scanner = malware_scanner
     app.state.email_service = email_service
     app.state.ingestion_service = ingestion_service
     app.state.report_service = report_service

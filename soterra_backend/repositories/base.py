@@ -45,6 +45,9 @@ class RepositoryBackend(Protocol):
     def get_report_by_file_hash(self, tenant_id: str, file_hash: str) -> dict | None:
         ...
 
+    def source_filename_exists(self, *, tenant_id: str, project_name: str, filename: str) -> bool:
+        ...
+
     def create_placeholder_document(
         self,
         *,
@@ -57,8 +60,10 @@ class RepositoryBackend(Protocol):
         site_name: str,
         address: str | None,
         source_filename: str,
+        stored_filename: str,
         stored_file: StoredFile,
         trade: str,
+        malware_scan_status: str = "clean",
     ) -> None:
         ...
 

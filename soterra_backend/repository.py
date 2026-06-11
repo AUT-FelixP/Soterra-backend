@@ -60,6 +60,9 @@ class RepositoryBackend(Protocol):
     def get_report_by_file_hash(self, tenant_id: str, file_hash: str) -> dict | None:
         ...
 
+    def source_filename_exists(self, *, tenant_id: str, project_name: str, filename: str) -> bool:
+        ...
+
     def create_placeholder_document(
         self,
         *,
@@ -72,8 +75,10 @@ class RepositoryBackend(Protocol):
         site_name: str,
         address: str | None,
         source_filename: str,
+        stored_filename: str,
         stored_file: StoredFile,
         trade: str,
+        malware_scan_status: str = "clean",
     ) -> None:
         ...
 
@@ -425,6 +430,21 @@ class SqliteRepository:
             return None
         return self.get_report(tenant_id, row["id"])
 
+    def source_filename_exists(self, *, tenant_id: str, project_name: str, filename: str) -> bool:
+        project_slug = _slug(project_name)
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT 1
+                FROM documents d
+                JOIN projects p ON p.id = d.project_id
+                WHERE d.tenant_id = ? AND p.slug = ? AND d.source_filename = ?
+                LIMIT 1
+                """,
+                (tenant_id, project_slug, filename),
+            ).fetchone()
+        return row is not None
+
     def create_placeholder_document(
         self,
         *,
@@ -437,8 +457,10 @@ class SqliteRepository:
         site_name: str,
         address: str | None,
         source_filename: str,
+        stored_filename: str,
         stored_file: StoredFile,
         trade: str,
+        malware_scan_status: str = "clean",
     ) -> None:
         project_id = create_id("prj")
         project_slug = _slug(project_name)
@@ -471,9 +493,10 @@ class SqliteRepository:
             connection.execute(
                 """
                 INSERT INTO documents (
-                  id, tenant_id, project_id, file_hash, file_tag, site_name, address, source_filename, storage_path, download_url, inspection_type,
+                  id, tenant_id, project_id, file_hash, file_tag, site_name, address, source_filename, stored_filename,
+                  storage_path, download_url, upload_status, processing_status, malware_scan_status, inspection_type,
                   trade, inspector, report_date, status, summary, units_json, uploaded_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     document_id,
@@ -484,8 +507,12 @@ class SqliteRepository:
                     site_name,
                     address,
                     source_filename,
+                    stored_filename,
                     stored_file.storage_path,
                     stored_file.download_url,
+                    "accepted",
+                    "processing",
+                    malware_scan_status,
                     "Pending extraction",
                     trade or "General",
                     "Pending extractor",
@@ -580,6 +607,7 @@ class SqliteRepository:
                 """
                 UPDATE documents
                 SET project_id = ?, source_filename = ?, storage_path = ?, download_url = ?,
+                    processing_status = ?,
                     site_name = ?, address = ?, inspection_type = ?, trade = ?, inspector = ?, report_date = ?, status = ?,
                     summary = ?, units_json = ?, uploaded_at = ?
                 WHERE tenant_id = ? AND id = ?
@@ -589,6 +617,7 @@ class SqliteRepository:
                     source_filename,
                     stored_file.storage_path,
                     stored_file.download_url,
+                    "completed",
                     extraction.site_name,
                     extraction.address,
                     extraction.inspection_type,
@@ -721,6 +750,14 @@ class SqliteRepository:
                 WHERE tenant_id = ? AND id = ?
                 """,
                 ("failed", extractor_name, error_message, raw_text[:4000], timestamp, tenant_id, job_id),
+            )
+            connection.execute(
+                """
+                UPDATE documents
+                SET processing_status = ?
+                WHERE tenant_id = ? AND id = ?
+                """,
+                ("failed", tenant_id, document_id),
             )
 
     def load_snapshot(self, tenant_id: str) -> RepositorySnapshot:
@@ -985,6 +1022,18 @@ class SqliteRepository:
                 WHERE address IS NULL
                 """
             )
+        document_additions = {
+            "stored_filename": "TEXT NOT NULL DEFAULT ''",
+            "upload_status": "TEXT NOT NULL DEFAULT 'accepted'",
+            "processing_status": "TEXT NOT NULL DEFAULT 'completed'",
+            "malware_scan_status": "TEXT NOT NULL DEFAULT 'clean'",
+        }
+        for name, sql_type in document_additions.items():
+            if name not in columns:
+                connection.execute(f"ALTER TABLE documents ADD COLUMN {name} {sql_type}")
+        connection.execute(
+            "UPDATE documents SET stored_filename = source_filename WHERE stored_filename IS NULL OR stored_filename = ''"
+        )
         if self._documents_have_global_file_uniques(connection):
             self._rebuild_documents_without_global_uniques(connection)
         connection.execute("DROP INDEX IF EXISTS idx_documents_file_hash_unique")
@@ -1048,8 +1097,12 @@ class SqliteRepository:
               site_name TEXT,
               address TEXT,
               source_filename TEXT NOT NULL,
+              stored_filename TEXT NOT NULL DEFAULT '',
               storage_path TEXT NOT NULL,
               download_url TEXT,
+              upload_status TEXT NOT NULL DEFAULT 'accepted',
+              processing_status TEXT NOT NULL DEFAULT 'completed',
+              malware_scan_status TEXT NOT NULL DEFAULT 'clean',
               inspection_type TEXT NOT NULL,
               trade TEXT NOT NULL,
               inspector TEXT NOT NULL,
@@ -1065,8 +1118,8 @@ class SqliteRepository:
         connection.execute(
             f"""
             INSERT INTO documents (
-              id, tenant_id, project_id, file_hash, file_tag, site_name, address, source_filename,
-              storage_path, download_url, inspection_type, trade, inspector, report_date, status,
+              id, tenant_id, project_id, file_hash, file_tag, site_name, address, source_filename, stored_filename,
+              storage_path, download_url, upload_status, processing_status, malware_scan_status, inspection_type, trade, inspector, report_date, status,
               summary, units_json, uploaded_at
             )
             SELECT
@@ -1082,8 +1135,12 @@ class SqliteRepository:
               site_name,
               address,
               source_filename,
+              source_filename,
               storage_path,
               download_url,
+              'accepted',
+              'completed',
+              'clean',
               inspection_type,
               trade,
               inspector,
@@ -1479,6 +1536,31 @@ class SupabaseRepository:
             return None
         return self.get_report(tenant_id, row[0]["id"])
 
+    def source_filename_exists(self, *, tenant_id: str, project_name: str, filename: str) -> bool:
+        project_slug = _slug(project_name)
+        projects = (
+            self.client.table("projects")
+            .select("id")
+            .eq("tenant_id", tenant_id)
+            .eq("slug", project_slug)
+            .limit(1)
+            .execute()
+            .data
+        )
+        if not projects:
+            return False
+        row = (
+            self.client.table("documents")
+            .select("id")
+            .eq("tenant_id", tenant_id)
+            .eq("project_id", projects[0]["id"])
+            .eq("source_filename", filename)
+            .limit(1)
+            .execute()
+            .data
+        )
+        return bool(row)
+
     def create_placeholder_document(
         self,
         *,
@@ -1491,8 +1573,10 @@ class SupabaseRepository:
         site_name: str,
         address: str | None,
         source_filename: str,
+        stored_filename: str,
         stored_file: StoredFile,
         trade: str,
+        malware_scan_status: str = "clean",
     ) -> None:
         timestamp = utc_now_iso()
         project_slug = _slug(project_name)
@@ -1547,8 +1631,12 @@ class SupabaseRepository:
             "site_name": site_name,
             "address": address,
             "source_filename": source_filename,
+            "stored_filename": stored_filename,
             "storage_path": stored_file.storage_path,
             "download_url": stored_file.download_url,
+            "upload_status": "accepted",
+            "processing_status": "processing",
+            "malware_scan_status": malware_scan_status,
             "inspection_type": "Pending extraction",
             "trade": trade or "General",
             "inspector": "Pending extractor",
@@ -1561,10 +1649,18 @@ class SupabaseRepository:
         try:
             self.client.table("documents").insert(document_payload).execute()
         except Exception as exc:
-            if not (_is_postgrest_missing_column(exc, "site_name") or _is_postgrest_missing_column(exc, "address")):
+            optional_columns = {
+                "site_name",
+                "address",
+                "stored_filename",
+                "upload_status",
+                "processing_status",
+                "malware_scan_status",
+            }
+            if not any(_is_postgrest_missing_column(exc, column) for column in optional_columns):
                 raise
-            document_payload.pop("site_name", None)
-            document_payload.pop("address", None)
+            for column in optional_columns:
+                document_payload.pop(column, None)
             self.client.table("documents").insert(document_payload).execute()
 
         self.client.table("jobs").insert(
@@ -1618,6 +1714,7 @@ class SupabaseRepository:
             "source_filename": source_filename,
             "storage_path": stored_file.storage_path,
             "download_url": stored_file.download_url,
+            "processing_status": "completed",
             "site_name": extraction.site_name,
             "address": extraction.address,
             "inspection_type": extraction.inspection_type,
@@ -1632,10 +1729,15 @@ class SupabaseRepository:
         try:
             self.client.table("documents").update(document_payload).eq("tenant_id", tenant_id).eq("id", document_id).execute()
         except Exception as exc:
-            if not (_is_postgrest_missing_column(exc, "site_name") or _is_postgrest_missing_column(exc, "address")):
+            if not (
+                _is_postgrest_missing_column(exc, "site_name")
+                or _is_postgrest_missing_column(exc, "address")
+                or _is_postgrest_missing_column(exc, "processing_status")
+            ):
                 raise
             document_payload.pop("site_name", None)
             document_payload.pop("address", None)
+            document_payload.pop("processing_status", None)
             self.client.table("documents").update(document_payload).eq("tenant_id", tenant_id).eq("id", document_id).execute()
 
         self.client.table("findings").delete().eq("tenant_id", tenant_id).eq("document_id", document_id).execute()

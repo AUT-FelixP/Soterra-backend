@@ -52,6 +52,30 @@ async def create_report(
     )
 
 
+@router.post("/bulk")
+async def create_reports_bulk(
+    background_tasks: BackgroundTasks,
+    files: list[UploadFile] = File(...),
+    project: str = Form(...),
+    site: str = Form(...),
+    status: str = Form("Reviewing"),
+    inspector: str = Form(""),
+    trade: str = Form("General"),
+    context: AuthContext = Depends(get_auth_context),
+    service: ReportUploadService = Depends(get_report_service),
+):
+    _ = status
+    _ = inspector
+    return await service.upload_reports_bulk(
+        background_tasks=background_tasks,
+        files=files,
+        tenant_id=context.tenant_id,
+        project=project,
+        site=site,
+        trade=trade,
+    )
+
+
 @router.post("/bulk-delete")
 def bulk_delete_reports_alias(
     payload: BulkDeleteReportsRequest,

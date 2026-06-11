@@ -142,11 +142,10 @@ class UploadAndRoutesTest(unittest.IsolatedAsyncioTestCase):
         detail = await self._wait_for_report_issues(report_id)
         report = detail["item"]
 
-        # Upload the same bytes again; backend should not create duplicate DB rows.
+        # Upload the same bytes again; backend should reject it as a duplicate warning state.
         status_code_2, payload_2 = await self._upload_once()
-        self.assertEqual(status_code_2, 200, payload_2)
-        self.assertIs(payload_2.get("isDuplicate"), True)
-        self.assertEqual(payload_2["item"]["id"], report_id)
+        self.assertEqual(status_code_2, 409, payload_2)
+        self.assertEqual(payload_2, {"detail": "This file has already been uploaded."})
 
         connection = self._connect_db()
         try:

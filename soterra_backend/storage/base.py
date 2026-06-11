@@ -14,6 +14,7 @@ class StorageBackend(Protocol):
         filename: str,
         content: bytes,
         content_type: str,
+        project_slug: str | None = None,
     ) -> StoredFile:
         ...
 

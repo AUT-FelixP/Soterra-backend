@@ -72,6 +72,8 @@ class Settings:
     supabase_bucket: str
     auth_session_ttl_hours: int
     max_upload_bytes: int
+    max_bulk_upload_bytes: int
+    max_bulk_file_count: int
     max_upload_pages: int
     max_reports_per_tenant: int
     upload_rate_limit_per_hour: int
@@ -142,7 +144,9 @@ class Settings:
             supabase_service_role_key=supabase_service_role_key,
             supabase_bucket=os.getenv("SUPABASE_STORAGE_BUCKET", "inspection-reports"),
             auth_session_ttl_hours=int(os.getenv("SOTERRA_AUTH_SESSION_TTL_HOURS", "12")),
-            max_upload_bytes=int(os.getenv("SOTERRA_MAX_UPLOAD_BYTES", str(10 * 1024 * 1024))),
+            max_upload_bytes=int(os.getenv("SOTERRA_MAX_UPLOAD_BYTES", str(50 * 1024 * 1024))),
+            max_bulk_upload_bytes=int(os.getenv("SOTERRA_MAX_BULK_UPLOAD_BYTES", str(250 * 1024 * 1024))),
+            max_bulk_file_count=int(os.getenv("SOTERRA_MAX_BULK_FILE_COUNT", "10")),
             max_upload_pages=int(os.getenv("SOTERRA_MAX_UPLOAD_PAGES", "100")),
             max_reports_per_tenant=int(os.getenv("SOTERRA_MAX_REPORTS_PER_TENANT", "1000")),
             upload_rate_limit_per_hour=int(os.getenv("SOTERRA_UPLOAD_RATE_LIMIT_PER_HOUR", "60")),

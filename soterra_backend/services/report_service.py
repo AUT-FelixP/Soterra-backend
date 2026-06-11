@@ -6,6 +6,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from fastapi import BackgroundTasks, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
@@ -16,11 +17,16 @@ from ..extractors.base import ExtractionRequest
 from ..models import ExtractionResult, IngestionOutcome
 from ..repositories.base import RepositoryBackend
 from ..storage.base import StorageBackend
-from ..utils import create_id, summarize_status
+from ..utils import create_id, slugify, summarize_status
+from .malware import MalwareScanner, NoopMalwareScanner
+from .upload_validation import (
+    detect_supported_type,
+    resolve_filename_conflict,
+    validate_readable_file,
+)
 
 logger = logging.getLogger("soterra_backend")
 
-PDF_CONTENT_TYPES = {"application/pdf", "application/octet-stream"}
 UPLOAD_CHUNK_SIZE = 1024 * 1024
 
 
@@ -28,8 +34,10 @@ UPLOAD_CHUNK_SIZE = 1024 * 1024
 class UploadContext:
     tenant_id: str
     filename: str
+    stored_filename: str
     content: bytes
     content_type: str
+    file_type: Literal["pdf", "docx"]
     project_name: str
     site_name: str
     trade: str
@@ -87,9 +95,10 @@ class ReportIngestionService:
         stored_file = self.storage.store(
             tenant_id=upload.tenant_id,
             document_id=document_id,
-            filename=upload.filename,
+            filename=upload.stored_filename,
             content=upload.content,
             content_type=upload.content_type,
+            project_slug=slugify(upload.project_name),
         )
         logger.info("file_stored report_id=%s storage_path=%s", document_id, getattr(stored_file, "storage_path", "?"))
 
@@ -102,9 +111,11 @@ class ReportIngestionService:
             project_name=upload.project_name,
             site_name=upload.site_name,
             address=upload.address,
-            source_filename=upload.filename,
+            source_filename=upload.stored_filename,
+            stored_filename=upload.stored_filename,
             stored_file=stored_file,  # type: ignore[arg-type]
             trade=upload.trade,
+            malware_scan_status="clean",
         )
 
         return None, IngestionStart(
@@ -138,7 +149,7 @@ class ReportIngestionService:
                 tenant_id=upload.tenant_id,
                 document_id=start.document_id,
                 job_id=start.job_id,
-                source_filename=upload.filename,
+                source_filename=upload.stored_filename,
                 stored_file=start.stored_file,  # type: ignore[arg-type]
                 extraction=normalized,
                 extractor_name=extractor_name,
@@ -172,7 +183,8 @@ class ReportIngestionService:
         return report
 
     def _extract(self, upload: UploadContext, stored_file) -> tuple[ExtractionResult, str, str]:
-        with tempfile.NamedTemporaryFile(suffix=".pdf", prefix="soterra-upload-", delete=False) as tmp_file:
+        suffix = ".pdf" if upload.file_type == "pdf" else ".docx"
+        with tempfile.NamedTemporaryFile(suffix=suffix, prefix="soterra-upload-", delete=False) as tmp_file:
             tmp_file.write(upload.content)
             temp_pdf_path = Path(tmp_file.name)
 
@@ -202,11 +214,13 @@ class ReportUploadService:
         repository: RepositoryBackend,
         storage: StorageBackend,
         ingestion_service: ReportIngestionService,
+        malware_scanner: MalwareScanner | None = None,
     ) -> None:
         self.settings = settings
         self.repository = repository
         self.storage = storage
         self.ingestion_service = ingestion_service
+        self.malware_scanner = malware_scanner or NoopMalwareScanner()
 
     async def upload_report(
         self,
@@ -225,25 +239,136 @@ class ReportUploadService:
         ):
             logger.warning("upload_rejected tenant_id=%s reason=rate_limit", tenant_id)
             raise HTTPException(status_code=429, detail="Too many report uploads. Please try again later.")
+        payload = await self.upload_one_report(
+            background_tasks=background_tasks,
+            file=file,
+            tenant_id=tenant_id,
+            project=project,
+            site=site,
+            trade=trade,
+        )
+        status_code = payload.pop("_status_code")
+        payload.pop("_bytes", None)
+        return JSONResponse(payload, status_code=status_code)
+
+    async def upload_reports_bulk(
+        self,
+        *,
+        background_tasks: BackgroundTasks,
+        files: list[UploadFile],
+        tenant_id: str,
+        project: str,
+        site: str,
+        trade: str,
+    ) -> JSONResponse:
+        if len(files) > self.settings.max_bulk_file_count:
+            raise HTTPException(status_code=413, detail=f"You can upload up to {self.settings.max_bulk_file_count} files at once.")
+        if not self.repository.consume_upload_rate_limit(
+            tenant_id=tenant_id,
+            limit=self.settings.upload_rate_limit_per_hour,
+            window_seconds=60 * 60,
+        ):
+            raise HTTPException(status_code=429, detail="Too many report uploads. Please try again later.")
+
+        total_bytes = 0
+        results = []
+        for file in files:
+            filename = file.filename or "uploaded-report"
+            try:
+                payload = await self.upload_one_report(
+                    background_tasks=background_tasks,
+                    file=file,
+                    tenant_id=tenant_id,
+                    project=project,
+                    site=site,
+                    trade=trade,
+                    consume_rate_limit=False,
+                )
+                total_bytes += int(payload.pop("_bytes", 0))
+                if total_bytes > self.settings.max_bulk_upload_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail="Bulk upload is too large. Upload fewer files or split the upload.",
+                    )
+                payload.pop("_status_code", None)
+                results.append({"filename": filename, "status": "accepted", **payload})
+            except HTTPException as exc:
+                results.append({"filename": filename, "status": "failed", "error": str(exc.detail)})
+
+        accepted = sum(1 for item in results if item["status"] == "accepted")
+        return JSONResponse(
+            {
+                "results": results,
+                "summary": {"total": len(results), "accepted": accepted, "failed": len(results) - accepted},
+            },
+            status_code=207 if accepted and accepted < len(results) else 201 if accepted else 400,
+        )
+
+    async def upload_one_report(
+        self,
+        *,
+        background_tasks: BackgroundTasks,
+        file: UploadFile,
+        tenant_id: str,
+        project: str,
+        site: str,
+        trade: str,
+        consume_rate_limit: bool = False,
+    ) -> dict:
+        if consume_rate_limit and not self.repository.consume_upload_rate_limit(
+            tenant_id=tenant_id,
+            limit=self.settings.upload_rate_limit_per_hour,
+            window_seconds=60 * 60,
+        ):
+            raise HTTPException(status_code=429, detail="Too many report uploads. Please try again later.")
+
         content = await read_limited_upload(file, self.settings.max_upload_bytes)
         if not content:
             logger.warning("upload_rejected tenant_id=%s reason=empty_file", tenant_id)
             raise HTTPException(status_code=400, detail="Uploaded file is empty.")
-        if (file.content_type or "application/pdf") not in PDF_CONTENT_TYPES or not content.startswith(b"%PDF"):
-            logger.warning("upload_rejected tenant_id=%s reason=invalid_pdf", tenant_id)
-            raise HTTPException(status_code=400, detail="Only PDF uploads are supported.")
-        if _pdf_page_count(content) > self.settings.max_upload_pages:
+
+        original_filename = file.filename or "uploaded-report"
+        file_type = detect_supported_type(original_filename, content)
+        validate_readable_file(file_type, content)
+        if file_type == "pdf" and _pdf_page_count(content) > self.settings.max_upload_pages:
             logger.warning("upload_rejected tenant_id=%s reason=page_limit", tenant_id)
             raise HTTPException(status_code=413, detail="Uploaded PDF has too many pages.")
+
+        scan_result = await self.malware_scanner.scan_bytes(filename=original_filename, content=content)
+        if not scan_result.clean:
+            logger.warning(
+                "upload_rejected tenant_id=%s reason=malware scanner=%s detail=%s",
+                tenant_id,
+                scan_result.scanner,
+                scan_result.reason,
+            )
+            raise HTTPException(status_code=422, detail="This file failed security scanning and cannot be uploaded.")
+
+        file_hash = _file_hash(content)
+        if self.repository.get_report_by_file_hash(tenant_id, file_hash):
+            logger.info("upload_rejected tenant_id=%s reason=duplicate file_hash=%s", tenant_id, file_hash[:12])
+            raise HTTPException(status_code=409, detail="This file has already been uploaded.")
+
+        stored_filename = resolve_filename_conflict(
+            original_filename=original_filename,
+            filename_exists=lambda candidate: self.repository.source_filename_exists(
+                tenant_id=tenant_id,
+                project_name=project,
+                filename=candidate,
+            ),
+        )
+
         if len(self.repository.load_snapshot(tenant_id).documents) >= self.settings.max_reports_per_tenant:
             logger.warning("upload_rejected tenant_id=%s reason=tenant_quota", tenant_id)
             raise HTTPException(status_code=429, detail="Tenant report upload quota reached.")
 
         upload_ctx = UploadContext(
             tenant_id=tenant_id,
-            filename=file.filename or "uploaded-report.pdf",
+            filename=original_filename,
+            stored_filename=stored_filename,
             content=content,
             content_type=file.content_type or "application/pdf",
+            file_type=file_type,
             project_name=project,
             site_name=site,
             trade=trade or "General",
@@ -252,7 +377,7 @@ class ReportUploadService:
 
         outcome, start = self.ingestion_service.start_ingest(upload_ctx)
         if outcome:
-            return JSONResponse({"item": outcome.item, "isDuplicate": outcome.is_duplicate}, status_code=200)
+            raise HTTPException(status_code=409, detail="This file has already been uploaded.")
 
         assert start is not None
         if self.settings.process_inline:
@@ -264,17 +389,14 @@ class ReportUploadService:
                     self.storage.delete(
                         tenant_id=tenant_id,
                         document_id=start.document_id,
-                        filename=upload_ctx.filename,
+                        filename=upload_ctx.stored_filename,
                     )
                 raise HTTPException(status_code=422, detail="Report extraction failed. The upload was not saved.") from exc
-            return JSONResponse({"item": report, "isDuplicate": False}, status_code=201)
+            return {"item": report, "isDuplicate": False, "_status_code": 201, "_bytes": len(content)}
 
         background_tasks.add_task(self.ingestion_service.finish_ingest, start, upload_ctx)
         placeholder = self.repository.get_report(tenant_id, start.document_id) or {"id": start.document_id}
-        return JSONResponse(
-            {"item": placeholder, "isDuplicate": False, "isProcessing": True},
-            status_code=202,
-        )
+        return {"item": placeholder, "isDuplicate": False, "isProcessing": True, "_status_code": 202, "_bytes": len(content)}
 
     def list_reports(self, *, tenant_id: str) -> dict:
         from ..analytics import build_report_list
@@ -343,7 +465,7 @@ async def read_limited_upload(file: UploadFile, max_bytes: int) -> bytes:
             break
         total += len(chunk)
         if total > max_bytes:
-            raise HTTPException(status_code=413, detail="Uploaded file is too large.")
+            raise HTTPException(status_code=413, detail=f"File is too large. Maximum size is {_format_mb(max_bytes)} MB.")
         chunks.append(chunk)
     return b"".join(chunks)
 
@@ -360,3 +482,7 @@ def _pdf_page_count(content: bytes) -> int:
             return document.page_count
     except Exception as exc:
         raise HTTPException(status_code=400, detail="Uploaded PDF could not be read.") from exc
+
+
+def _format_mb(value: int) -> int:
+    return max(1, value // (1024 * 1024))

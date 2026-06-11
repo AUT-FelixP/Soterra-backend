@@ -22,9 +22,15 @@ class LocalFileStorage:
         filename: str,
         content: bytes,
         content_type: str,
+        project_slug: str | None = None,
     ) -> StoredFile:
         _ = content_type
-        document_dir, destination = self._paths(tenant_id=tenant_id, document_id=document_id, filename=filename)
+        document_dir, destination = self._paths(
+            tenant_id=tenant_id,
+            document_id=document_id,
+            filename=filename,
+            project_slug=project_slug,
+        )
         document_dir.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(content)
         resolved = str(destination)
@@ -32,6 +38,12 @@ class LocalFileStorage:
 
     def delete(self, *, tenant_id: str, document_id: str, filename: str) -> None:
         document_dir, target = self._paths(tenant_id=tenant_id, document_id=document_id, filename=filename)
+        if not target.exists():
+            tenant_root = (self.root_dir.resolve() / "tenants" / _safe_storage_component(tenant_id, "tenant_id")).resolve()
+            matches = list(tenant_root.glob(f"projects/*/reports/{_safe_storage_component(document_id, 'document_id')}/{_safe_storage_filename(filename)}")) if tenant_root.exists() else []
+            if matches:
+                target = matches[0].resolve()
+                document_dir = target.parent
         if target.exists() and target.is_file():
             target.unlink()
         if document_dir.exists() and document_dir.is_dir():
@@ -44,12 +56,23 @@ class LocalFileStorage:
         _, target = self._paths(tenant_id=tenant_id, document_id=document_id, filename=filename)
         return target.read_bytes()
 
-    def _paths(self, *, tenant_id: str, document_id: str, filename: str) -> tuple[Path, Path]:
+    def _paths(
+        self,
+        *,
+        tenant_id: str,
+        document_id: str,
+        filename: str,
+        project_slug: str | None = None,
+    ) -> tuple[Path, Path]:
         safe_tenant_id = _safe_storage_component(tenant_id, "tenant_id")
         safe_document_id = _safe_storage_component(document_id, "document_id")
         safe_name = _safe_storage_filename(filename)
         root = self.root_dir.resolve()
-        document_dir = (root / safe_tenant_id / safe_document_id).resolve()
+        if project_slug:
+            safe_project = _safe_storage_component(project_slug, "project_slug")
+            document_dir = (root / "tenants" / safe_tenant_id / "projects" / safe_project / "reports" / safe_document_id).resolve()
+        else:
+            document_dir = (root / safe_tenant_id / safe_document_id).resolve()
         destination = (document_dir / safe_name).resolve()
         if root not in document_dir.parents or document_dir not in destination.parents:
             raise RuntimeError("Resolved storage path escaped the storage directory.")
@@ -76,8 +99,14 @@ class SupabaseFileStorage:
         filename: str,
         content: bytes,
         content_type: str,
+        project_slug: str | None = None,
     ) -> StoredFile:
-        path = _supabase_storage_path(tenant_id=tenant_id, document_id=document_id, filename=filename)
+        path = _supabase_storage_path(
+            tenant_id=tenant_id,
+            document_id=document_id,
+            filename=filename,
+            project_slug=project_slug,
+        )
 
         try:
             self.client.storage.from_(self.bucket).upload(
@@ -140,7 +169,16 @@ def _safe_storage_component(value: str, field_name: str) -> str:
     return cleaned
 
 
-def _supabase_storage_path(*, tenant_id: str, document_id: str, filename: str) -> str:
+def _supabase_storage_path(
+    *,
+    tenant_id: str,
+    document_id: str,
+    filename: str,
+    project_slug: str | None = None,
+) -> str:
     safe_tenant_id = _safe_storage_component(tenant_id, "tenant_id")
     safe_document_id = _safe_storage_component(document_id, "document_id")
+    if project_slug:
+        safe_project = _safe_storage_component(project_slug, "project_slug")
+        return f"tenants/{safe_tenant_id}/projects/{safe_project}/reports/{safe_document_id}/{_safe_storage_filename(filename)}"
     return f"{safe_tenant_id}/{safe_document_id}/{_safe_storage_filename(filename)}"

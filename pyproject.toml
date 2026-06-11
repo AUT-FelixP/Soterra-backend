@@ -15,6 +15,7 @@ dependencies = [
   "openai>=2.0.0,<3",
   "pydantic>=2.11,<3",
   "PyMuPDF>=1.26,<2",
+  "pypdf>=5,<6",
   "python-multipart>=0.0.20,<1",
   "smolagents[litellm]>=1.18,<2",
   "supabase>=2.16,<3",
