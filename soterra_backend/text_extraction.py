@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 
 import fitz
+from PIL import Image
 
 
 def extract_embedded_text(pdf_path: Path) -> str:
@@ -30,12 +31,39 @@ def render_page_images(pdf_path: Path, max_pages: int = 8) -> list[str]:
     return encoded_pages
 
 
+def render_page_image_paths(pdf_path: Path, target_dir: Path, max_pages: int = 8, *, dpi: int = 120) -> list[Path]:
+    document = fitz.open(pdf_path)
+    page_paths: list[Path] = []
+
+    for index in range(min(document.page_count, max_pages)):
+        page = document[index]
+        pixmap = page.get_pixmap(dpi=dpi, alpha=False)
+        output = target_dir / f"page-{index + 1:03d}.png"
+        pixmap.save(output)
+        page_paths.append(output)
+
+    return page_paths
+
+
+def render_page_pil_images(pdf_path: Path, max_pages: int = 8, *, dpi: int = 120) -> list[Image.Image]:
+    document = fitz.open(pdf_path)
+    images: list[Image.Image] = []
+
+    for index in range(min(document.page_count, max_pages)):
+        page = document[index]
+        pixmap = page.get_pixmap(dpi=dpi, alpha=False)
+        image = Image.frombytes("RGB", (pixmap.width, pixmap.height), pixmap.samples)
+        images.append(image)
+
+    return images
+
+
 def extract_text_with_easyocr(pdf_path: Path, max_pages: int = 12) -> str:
     try:
         import easyocr
     except ModuleNotFoundError as exc:
         raise RuntimeError(
-            "easyocr is not installed. Install the demo extras or configure OPENAI_API_KEY."
+            "easyocr is not installed. Install the demo extras or use SOTERRA_EXTRACTOR_MODE=model."
         ) from exc
 
     reader = easyocr.Reader(["en"], gpu=False)
@@ -65,4 +93,3 @@ def extract_document_text(pdf_path: Path) -> tuple[str, str]:
         return ocr_text, "easyocr"
 
     return embedded_text, "empty"
-

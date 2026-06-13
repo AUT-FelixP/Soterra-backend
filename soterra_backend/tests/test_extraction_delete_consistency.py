@@ -73,7 +73,7 @@ class ExtractionDeleteConsistencyTest(unittest.IsolatedAsyncioTestCase):
         finally:
             connection.close()
 
-    async def test_package_extraction_falls_back_and_delete_clears_persisted_rows(self) -> None:
+    async def test_package_extraction_without_dummy_findings_and_delete_clears_persisted_rows(self) -> None:
         headers = await self._auth_headers()
         upload = await self.client.post(
             "/reports",
@@ -91,16 +91,16 @@ class ExtractionDeleteConsistencyTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(upload.status_code, 201, upload.text)
         payload = upload.json()
         report_id = payload["item"]["id"]
-        self.assertGreaterEqual(len(payload["item"].get("issues") or []), 1)
+        self.assertEqual(payload["item"].get("issues") or [], [])
         self.assertEqual(self._count_rows("documents"), 1)
-        self.assertGreaterEqual(self._count_rows("findings"), 1)
+        self.assertEqual(self._count_rows("findings"), 0)
         self.assertEqual(self._count_rows("jobs"), 1)
 
         dashboard = await self.client.get("/dashboard", headers=headers)
         self.assertEqual(dashboard.status_code, 200)
         metrics = {item["label"]: item["value"] for item in dashboard.json()["metrics"]}
         self.assertEqual(metrics["Inspections"], "1")
-        self.assertNotEqual(metrics["Issues found"], "0")
+        self.assertEqual(metrics["Issues found"], "0")
 
         delete = await self.client.request("DELETE", "/reports", json={"ids": [report_id]}, headers=headers)
         self.assertEqual(delete.status_code, 200, delete.text)

@@ -8,13 +8,11 @@ from pathlib import Path
 import fitz
 
 from ..config import Settings
-from ..demo_extractions import fallback_demo_extraction
 from ..extraction_quality import finalize_extraction
 from ..models import ExtractedFinding, ExtractionResult, PredictedInspection
 from ..text_extraction import extract_embedded_text
 from ..utils import parse_report_date, plus_days
 from .base import ExtractionArtifacts, ExtractionRequest
-from .kauri_reports import match_kauri_report
 
 _DOCTR_PREDICTOR = None
 
@@ -60,14 +58,18 @@ ADDRESS_PATTERN = re.compile(
 
 
 class DoctrRulesPresidioExtractor:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        use_curated_profiles: bool = False,
+        use_demo_fallback: bool = False,
+    ) -> None:
         self.settings = settings
+        self.use_curated_profiles = use_curated_profiles
+        self.use_demo_fallback = use_demo_fallback
 
     def extract(self, request: ExtractionRequest, pdf_path: Path) -> ExtractionArtifacts:
-        kauri_match = match_kauri_report(request)
-        if kauri_match:
-            return kauri_match
-
         # Fast-path: many PDFs contain embedded text already. docTR OCR is expensive, so only
         # run OCR when the embedded text is too sparse to be useful.
         embedded_text = extract_embedded_text(pdf_path)
@@ -79,8 +81,6 @@ class DoctrRulesPresidioExtractor:
                 raw_text = embedded_text
 
         extraction = _build_rule_extraction(request, raw_text)
-        if not extraction.findings:
-            extraction = fallback_demo_extraction(request.filename, raw_text)
         extraction = finalize_extraction(extraction, request.filename)
 
         return ExtractionArtifacts(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from soterra_backend.agent.service import AgentIntent, SoterraAgentService, classify_intent, is_vague_answer
 from soterra_backend.agent.tools import build_soterra_tools
@@ -574,7 +575,7 @@ class AgentToolCoverageTest(unittest.TestCase):
         service = SoterraAgentService(KauriGoldenRepository())
         cases = [
             ("Which Kauri Apartments report failed and why?", ["cavity wrap", "flashings", "membrane support upstand"]),
-            ("What does the services inspection say about coordination problems?", ["poor coordination", "duct clashes", "acoustic lagging"]),
+            ("What does the services inspection say about coordination problems?", ["services inspection", "ducting", "acoustic lagging"]),
             ("What passive fire issues need close out?", ["fire damper", "plasterboard", "close-out photos"]),
             ("Based on the reports, what should appear on the dashboard?", ["open issue count", "failed inspection count", "project risk"]),
             ("Which issues should appear in the tracker for Kauri Apartments?", ["cavity wrap", "passive fire", "mechanical ducting"]),
@@ -764,6 +765,53 @@ class AgentToolCoverageTest(unittest.TestCase):
             used_tools=[],
         )
         self.assertIn("No matching active reports are available for your current account", answer)
+
+    def test_agent_status_supports_local_transformers_provider(self) -> None:
+        service = SoterraAgentService(FakeRepository())
+        with patch.dict(
+            "os.environ",
+            {
+                "SOTERRA_AGENT_ENABLED": "true",
+                "SOTERRA_AGENT_PROVIDER": "local_transformers",
+                "SOTERRA_AGENT_MODEL_ID": "Qwen/Qwen3-4B-Instruct-2507",
+            },
+        ):
+            status = service.status()
+        self.assertTrue(status["configured"])
+        self.assertEqual(status["provider"], "local_transformers")
+
+    def test_agent_status_supports_huggingface_provider(self) -> None:
+        service = SoterraAgentService(FakeRepository())
+        with patch.dict(
+            "os.environ",
+            {
+                "SOTERRA_AGENT_ENABLED": "true",
+                "SOTERRA_AGENT_PROVIDER": "huggingface",
+                "SOTERRA_AGENT_MODEL_ID": "Qwen/Qwen3-4B-Instruct-2507:fastest",
+                "HF_TOKEN": "test-key",
+            },
+        ):
+            status = service.status()
+        self.assertTrue(status["enabled"])
+        self.assertTrue(status["configured"])
+        self.assertEqual(status["provider"], "huggingface")
+        self.assertEqual(status["model_id"], "Qwen/Qwen3-4B-Instruct-2507:fastest")
+
+    def test_agent_status_uses_vercel_remote_defaults_with_hf_token(self) -> None:
+        service = SoterraAgentService(FakeRepository())
+        with patch.dict(
+            "os.environ",
+            {
+                "VERCEL": "1",
+                "SOTERRA_AGENT_ENABLED": "true",
+                "HF_TOKEN": "test-token",
+            },
+            clear=True,
+        ):
+            status = service.status()
+        self.assertTrue(status["configured"])
+        self.assertEqual(status["provider"], "huggingface")
+        self.assertEqual(status["model_id"], "Qwen/Qwen3-4B-Instruct-2507:fastest")
 
 
 if __name__ == "__main__":

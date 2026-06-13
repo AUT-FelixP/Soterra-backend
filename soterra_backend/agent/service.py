@@ -10,6 +10,7 @@ from typing import Any
 from .prompts import SOTERRA_AGENT_SYSTEM_PROMPT
 from .schemas import AgentChatResponse, AgentRelatedEntities
 from .tools import build_soterra_tools
+from ..config import DEFAULT_MODEL_ID, DEFAULT_MODEL_PROVIDER, DEFAULT_REMOTE_MODEL_ID
 from ..repository import RepositoryBackend
 from ..services.work_package_service import build_chat_cards, build_todays_fix_list, build_work_packages
 from ..utils import safe_int
@@ -67,15 +68,13 @@ class SoterraAgentService:
 
     def status(self) -> dict:
         enabled = os.getenv("SOTERRA_AGENT_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
-        provider = os.getenv("SOTERRA_AGENT_MODEL_PROVIDER", "huggingface").strip().lower()
+        provider = os.getenv("SOTERRA_AGENT_PROVIDER", _default_agent_provider()).strip().lower()
         model_id = self._default_model_id(provider)
         configured = False
-        if provider == "openai":
-            configured = bool(os.getenv("OPENAI_API_KEY"))
-        elif provider == "huggingface":
-            configured = bool(os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN"))
-        elif provider == "litellm":
-            configured = True
+        if provider in {"huggingface", "hf_inference", "huggingface_inference"}:
+            configured = bool(os.getenv("HF_TOKEN"))
+        elif provider in {"local_transformers", "transformers_local", "local-hf", "local_hf"}:
+            configured = bool(model_id)
         return {
             "enabled": enabled,
             "configured": configured,
@@ -292,49 +291,46 @@ class SoterraAgentService:
         )
 
     def _build_model(self) -> Any:
-        provider = os.getenv("SOTERRA_AGENT_MODEL_PROVIDER", "huggingface").strip().lower()
+        provider = os.getenv("SOTERRA_AGENT_PROVIDER", _default_agent_provider()).strip().lower()
         model_id = self._default_model_id(provider)
         try:
             temperature = float(os.getenv("SOTERRA_AGENT_TEMPERATURE", "0.2"))
         except ValueError:
             temperature = 0.2
 
-        if provider == "openai":
-            api_key = os.getenv("OPENAI_API_KEY")
+        if provider in {"huggingface", "hf_inference", "huggingface_inference"}:
+            api_key = os.getenv("HF_TOKEN")
             if not api_key:
-                raise AgentConfigurationError("OPENAI_API_KEY is required for Soterra agent chat.")
-            from smolagents import OpenAIModel
-
-            return OpenAIModel(model_id=model_id, api_key=api_key, temperature=temperature)
-
-        if provider == "huggingface":
-            token = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
-            if not token:
                 raise AgentConfigurationError("HF_TOKEN is required for Hugging Face Soterra agent chat.")
-            from smolagents import InferenceClientModel
+            from .huggingface_inference import HuggingFaceInferenceChatModel
 
-            hf_provider = os.getenv("SOTERRA_AGENT_HF_PROVIDER") or None
             try:
                 max_tokens = int(os.getenv("SOTERRA_AGENT_MAX_TOKENS", "1200"))
             except ValueError:
                 max_tokens = 1200
-            try:
-                timeout = int(os.getenv("SOTERRA_AGENT_HF_TIMEOUT_SECONDS", "8"))
-            except ValueError:
-                timeout = 8
-            return InferenceClientModel(
+            return HuggingFaceInferenceChatModel(
                 model_id=model_id,
-                provider=hf_provider,
-                token=token,
-                timeout=max(3, min(timeout, 60)),
-                temperature=temperature,
+                api_key=api_key,
+                timeout_seconds=int(os.getenv("SOTERRA_AGENT_TIMEOUT_SECONDS", "90")),
                 max_tokens=max_tokens,
+                temperature=temperature,
             )
 
-        if provider == "litellm":
-            from smolagents import LiteLLMModel
-
-            return LiteLLMModel(model_id=model_id, temperature=temperature)
+        if provider in {"local_transformers", "transformers_local", "local-hf", "local_hf"}:
+            from .direct_transformers import DirectTransformersChatModel
+            try:
+                max_tokens = int(os.getenv("SOTERRA_AGENT_MAX_TOKENS", os.getenv("SOTERRA_LOCAL_MODEL_MAX_NEW_TOKENS", "1200")))
+            except ValueError:
+                max_tokens = 1200
+            return DirectTransformersChatModel(
+                model_id=model_id,
+                device_map=os.getenv("SOTERRA_LOCAL_MODEL_DEVICE_MAP", "auto"),
+                torch_dtype=os.getenv("SOTERRA_LOCAL_MODEL_TORCH_DTYPE") or None,
+                trust_remote_code=os.getenv("SOTERRA_LOCAL_MODEL_TRUST_REMOTE_CODE", "true").strip().lower()
+                in {"1", "true", "yes", "on"},
+                max_new_tokens=max_tokens,
+                temperature=temperature,
+            )
 
         raise AgentConfigurationError("Unsupported Soterra agent model provider.")
 
@@ -342,11 +338,16 @@ class SoterraAgentService:
         configured = os.getenv("SOTERRA_AGENT_MODEL_ID")
         if configured:
             return configured
-        if provider == "openai":
-            return os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
-        if provider == "huggingface":
-            return "Qwen/Qwen2.5-72B-Instruct"
-        return "Qwen/Qwen2.5-72B-Instruct"
+        if provider in {"huggingface", "hf_inference", "huggingface_inference"}:
+            return DEFAULT_REMOTE_MODEL_ID if os.getenv("VERCEL") else DEFAULT_MODEL_ID
+        if provider in {
+            "local_transformers",
+            "transformers_local",
+            "local-hf",
+            "local_hf",
+        }:
+            return DEFAULT_MODEL_ID
+        return DEFAULT_MODEL_ID
 
     def _fallback_answer(
         self,
@@ -966,15 +967,7 @@ def build_issue_table_answer(payload: dict, *, include_full_register: bool = Fal
     remaining = safe_int(payload.get("remaining_count"))
     if not include_full_register and (remaining or len(issues) > 5):
         lines.append(f"\nShowing {min(len(issues), 5)} issue examples; ask for the full register to see all {total_open}.")
-    lines.extend(
-        [
-            "",
-            "Suggested fix order:",
-            "1. Fix high-priority weather-tightness and waterproofing failures first.",
-            "2. Close passive fire stopping items with evidence/photos.",
-            "3. Resolve services coordination clashes by trade.",
-        ]
-    )
+    lines.extend(_fix_order_from_issues(issues))
     return "\n".join(lines)
 
 
@@ -1006,20 +999,23 @@ def build_evidence_answer(payload: dict) -> str:
 
 
 def build_tracker_answer(payload: dict) -> str:
+    issues = [item for item in payload.get("issues", []) if item.get("status") == "Open"]
+    themes = _issue_theme_summary(issues)
     lines = [
         f"The tracker has {payload.get('total_issues', 0)} issues: {payload.get('open', 0)} open and {payload.get('closed', 0)} closed.",
         f"By trade: {payload.get('by_trade', {})}.",
-        "Key tracker groups include cavity wrap/deck flashing failures, passive fire close-outs, services coordination issues, plumbing/fire collar/acoustic lagging items, and mechanical ducting or AC pipework issues.",
-        "",
     ]
+    if themes:
+        lines.append(f"Main extracted themes: {themes}.")
+    lines.append("")
     return "\n".join(lines) + build_issue_table_answer(
         {
             "project_name": "tracked projects",
             "project_address": "active account",
             "total_open": payload.get("open", 0),
-            "high_priority_open": len([item for item in payload.get("issues", []) if item.get("priority") in {"High", "Critical"} and item.get("status") == "Open"]),
+            "high_priority_open": len([item for item in issues if item.get("priority") in {"High", "Critical"}]),
             "overdue_open": 0,
-            "issues": [item for item in payload.get("issues", []) if item.get("status") == "Open"],
+            "issues": issues,
         }
     )
 
@@ -1064,15 +1060,7 @@ def build_issue_due_answer(payload: dict) -> str:
     remaining = safe_int(payload.get("remaining_count"))
     if remaining:
         lines.append(f"\nShowing the first {min(len(issues), 10)} issues; {remaining} more remain in the tracker.")
-    lines.extend(
-        [
-            "",
-            "Suggested due order:",
-            "1. Treat critical weather-tightness, waterproofing, and passive fire items as due before the next site meeting or reinspection.",
-            "2. Set owner due dates for high-priority envelope and fire-stopping items first because they block close-out evidence.",
-            "3. Schedule services coordination fixes after the critical/high items, grouped by trade and location.",
-        ]
-    )
+    lines.extend(_fix_order_from_issues(issues, heading="Suggested due order:"))
     return "\n".join(lines)
 
 
@@ -1089,13 +1077,11 @@ def build_report_summary_answer(payload: dict, normalized: str = "", project_slu
     for index, report in enumerate(reports[:8], start=1):
         failed = report.get("failed_items") or []
         failed_text = ", ".join(str(item.get("item") or item.get("title") or item) for item in failed[:5]) or report.get("summary") or "No extracted failed items listed"
-        if "fire" in str(report.get("inspection_type") or report.get("report_title") or "").lower() and "passive fire" not in failed_text.lower():
-            failed_text = f"Passive fire stopping close-outs; {failed_text}"
-        if "services" in str(report.get("inspection_type") or report.get("report_title") or "").lower() and "services coordination" not in failed_text.lower():
-            failed_text = f"Services coordination issues; {failed_text}"
         lines.append(
             f"{index}. {report.get('report_title') or report.get('inspection_type')} - {report.get('overall_outcome', 'Unknown')}\n"
+            f"   Trade/area: {report.get('trade') or report.get('category') or report.get('inspection_type') or 'Not specified'}.\n"
             f"   Main findings: {failed_text}.\n"
+            f"   Report context: {report.get('summary') or 'No extracted summary available'}.\n"
             f"   Open issues: {report.get('open_findings_count', 0)}.\n"
             "   Recommended action: Assign the open findings to the responsible trades and collect close-out evidence."
         )
@@ -1152,6 +1138,10 @@ def _cell(value: Any) -> str:
     return str(value or "Not specified").replace("|", "/").strip()
 
 
+def _default_agent_provider() -> str:
+    return "huggingface" if os.getenv("VERCEL") else DEFAULT_MODEL_PROVIDER
+
+
 def _used_tool_entries(used_tools: list[str]) -> list[dict]:
     reasons = {
         "get_schema_catalog": "Mapped the question to safe Soterra data domains",
@@ -1188,8 +1178,6 @@ def _infer_project_slug_from_history(history: list[Any] | None) -> str | None:
     if not history:
         return None
     text = "\n".join(getattr(item, "content", "") for item in history[-10:]).lower()
-    if "kauri apartments" in text:
-        return "kauri-apartments"
     match = re.search(r"\b([a-z0-9]+(?:-[a-z0-9]+)+)\b", text)
     return match.group(1) if match else None
 
@@ -1217,7 +1205,7 @@ def _answer_project_reports(payload: dict, normalized: str, project_slug: str | 
         findings = report.get("failed_items") or [item.get("title") for item in report.get("top_findings", []) if item.get("title")]
         finding_text = ", ".join(map(str, findings[:6])) or report.get("summary") or "No extracted findings listed"
         lines.append(f"{index}. {report.get('inspection_type') or report.get('inspectionType') or 'Inspection report'} - {outcome}. Main issues: {finding_text}.")
-    lines.append("Recommended next action: close out failed Council/checklist items and passive fire evidence first, then assign services coordination items by trade in the tracker.")
+    lines.append("Recommended next action: assign the listed open items to the responsible trade and attach the close-out evidence requested in the extracted findings.")
     return "\n".join(lines)
 
 
@@ -1243,46 +1231,42 @@ def _answer_priorities_from_reports(payload: dict, project_slug: str | None) -> 
     reports = _filter_reports(payload, "", project_slug)
     if not reports:
         return "I do not have active reports in this chat context for your current account. Ask me to summarize an active project first."
-    return (
-        "Top 3 contractor priorities:\n"
-        "1. Close out failed cavity wrap items first, especially flashings, cavity battens, deck/balcony threshold step-down, and membrane upstand.\n"
-        "2. Complete passive fire stopping close-outs, including plasterboard fixings, penetrations, fire damper breakaway joints, and requested close-out photos.\n"
-        "3. Fix services coordination issues by trade, especially duct clashes, clearances, tight cabling, fire collars, acoustic lagging, and incomplete AC/data items."
-    )
+    issues = []
+    for report in reports:
+        issues.extend(report.get("failed_items") or [])
+        issues.extend(item.get("title") for item in report.get("top_findings", []) if item.get("title"))
+    if not issues:
+        return "I found active reports, but no extracted open findings are available to rank yet."
+    lines = ["Top contractor priorities from the active extracted findings:"]
+    for index, issue in enumerate(issues[:3], start=1):
+        title = issue.get("title") or issue.get("item") if isinstance(issue, dict) else issue
+        trade = issue.get("trade") if isinstance(issue, dict) else None
+        location = issue.get("location") if isinstance(issue, dict) else None
+        detail = " - ".join(str(value) for value in [trade, location] if value)
+        lines.append(f"{index}. {title}{f' ({detail})' if detail else ''}.")
+    lines.append("Recommended next action: assign these items to owners and collect the evidence listed on each issue.")
+    return "\n".join(lines)
 
 
 def _answer_services_coordination(payload: dict, project_slug: str | None) -> str:
-    reports = _filter_reports(payload, "services kauri", project_slug)
+    reports = _filter_reports_by_terms(payload, ["services", "mechanical", "plumbing", "electrical", "data"], project_slug)
     if not reports:
-        return "I could not find an active services inspection report for your current account."
-    return (
-        "The services inspection points to poor coordination between services and recurring mechanical ducting problems. "
-        "Evidence includes duct clashes, cabling too tight, flex duct pressed against framing or compressed by supports, unsuitable kitchen extract routing, "
-        "water supply isolation and clearance issues, pipework needing fire collaring, drainage needing acoustic lagging, and incomplete AC/data items. "
-        "Recommended next action: have the main contractor coordinate mechanical, plumbing, and electrical/data QA before reinspection."
-    )
+        return "I could not find active extracted services, mechanical, plumbing, electrical, or data findings for your current account."
+    return _answer_project_reports({"items": reports}, "services", project_slug)
 
 
 def _answer_fire_stopping(payload: dict, project_slug: str | None) -> str:
-    reports = _filter_reports(payload, "fire kauri", project_slug)
+    reports = _filter_reports_by_terms(payload, ["fire", "passive fire", "fire stopping"], project_slug)
     if not reports:
-        return "I could not find an active fire inspection report for your current account."
-    return (
-        "The passive fire close-outs are fire damper breakaway joint compliance, missing plasterboard lining fixings, fire-rated bulkhead and penetration stopping, "
-        "pipe and cable penetration checks, close-out photos for items 3, 4, 5, and 10, and later inspection of Level 5 lift shaft fire stopping. "
-        "Recommended next action: collect close-out photos and manufacturer-compliant evidence before booking follow-up inspection."
-    )
+        return "I could not find active extracted fire-stopping findings for your current account."
+    return _answer_project_reports({"items": reports}, "fire", project_slug)
 
 
 def _answer_dashboard_linkage(reports_payload: dict, dashboard_payload: dict, project_slug: str | None) -> str:
-    reports = _filter_reports(reports_payload, "kauri", project_slug)
+    reports = _filter_reports(reports_payload, "", project_slug)
     if not reports:
         return "No matching active reports are available for your current account, so I cannot map them to dashboard items."
-    return (
-        "Based on the active reports, the dashboard should surface open issue count, failed inspection count, repeated failure drivers, project risk, aging issues, close-out status, and upcoming reinspection/site meeting risk. "
-        "For Kauri Apartments, the key dashboard signals are failed cavity wrap items, passive fire stopping close-outs, and recurring services coordination defects. "
-        "Recommended next action: use those dashboard cards to drive tracker assignments and close-out evidence collection."
-    )
+    return _answer_from_dashboard_summary(dashboard_payload)
 
 
 def _answer_tracker_linkage(payload: dict, project_slug: str | None) -> str:
@@ -1291,9 +1275,15 @@ def _answer_tracker_linkage(payload: dict, project_slug: str | None) -> str:
         issues = [item for item in issues if item.get("projectSlug") == project_slug or project_slug.replace("-", " ") in str(item.get("project", "")).lower()]
     if not issues:
         return "I could not find actionable open tracker issues for that project in your current account."
-    return (
-        "The tracker should include actionable open findings grouped by discipline: cavity wrap/deck flashing failures, passive fire stopping close-outs, services coordination issues, plumbing fire-collar and acoustic-lagging items, and mechanical ducting/AC pipework issues. "
-        "Recommended next action: assign each item to the responsible trade and attach close-out photos or QA evidence."
+    return build_issue_table_answer(
+        {
+            "project_name": project_slug.replace("-", " ").title() if project_slug else "active projects",
+            "project_address": "active account",
+            "total_open": len(issues),
+            "high_priority_open": len([item for item in issues if item.get("priority") in {"High", "Critical"}]),
+            "overdue_open": len([item for item in issues if item.get("overdue")]),
+            "issues": issues,
+        }
     )
 
 
@@ -1302,6 +1292,86 @@ def _project_name_from_reports(reports: list[dict], normalized: str, project_slu
         return str(reports[0].get("project_name") or reports[0].get("project") or "this project")
     if project_slug:
         return project_slug.replace("-", " ").title()
-    if "kauri" in normalized:
-        return "Kauri Apartments"
     return "this project"
+
+
+def _filter_reports_by_terms(payload: dict, terms: list[str], project_slug: str | None = None) -> list[dict]:
+    reports = _filter_reports(payload, "", project_slug)
+    lowered_terms = [term.lower() for term in terms]
+    matched = []
+    for report in reports:
+        failed_items = report.get("failed_items") or []
+        top_findings = report.get("top_findings") or []
+        haystack = " ".join(
+            str(value or "")
+            for value in [
+                report.get("inspection_type"),
+                report.get("inspectionType"),
+                report.get("trade"),
+                report.get("summary"),
+                report.get("report_title"),
+                report.get("reportTitle"),
+                " ".join(_finding_text(item) for item in failed_items),
+                " ".join(_finding_text(item) for item in top_findings),
+            ]
+        ).lower()
+        if any(term in haystack for term in lowered_terms):
+            matched.append(report)
+    return matched
+
+
+def _fix_order_from_issues(issues: list[dict], *, heading: str = "Suggested fix order:") -> list[str]:
+    if not issues:
+        return []
+    prioritized = sorted(
+        issues,
+        key=lambda item: (
+            _priority_rank(str(item.get("priority") or item.get("severity") or "")),
+            str(item.get("trade") or item.get("category") or ""),
+            str(item.get("location") or ""),
+        ),
+    )
+    lines = ["", heading]
+    for index, issue in enumerate(prioritized[:3], start=1):
+        title = _cell(issue.get("title"))
+        trade = _cell(issue.get("trade") or issue.get("category"))
+        location = _cell(issue.get("location"))
+        action = _cell(issue.get("recommended_action") or issue.get("required_fix") or "Confirm close-out evidence and update the issue status.")
+        lines.append(f"{index}. {title} - {trade}, {location}. {action}")
+    return lines
+
+
+def _priority_rank(value: str) -> int:
+    return {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}.get(value, 4)
+
+
+def _finding_text(item: object) -> str:
+    if isinstance(item, dict):
+        return str(item.get("title") or item.get("item") or item.get("description") or "")
+    return str(item or "")
+
+
+def _issue_theme_summary(issues: list[dict]) -> str:
+    haystack = " ".join(
+        " ".join(
+            str(value or "")
+            for value in [
+                issue.get("title"),
+                issue.get("description"),
+                issue.get("trade"),
+                issue.get("category"),
+                issue.get("recommended_action"),
+            ]
+        )
+        for issue in issues
+    ).lower()
+    themes = []
+    if "mechanical" in haystack and ("duct" in haystack or "ducting" in haystack):
+        themes.append("mechanical ducting")
+    if "passive fire" in haystack or "fire stopping" in haystack or "fire-rated" in haystack:
+        themes.append("passive fire")
+    if "cavity" in haystack or "wrap" in haystack:
+        themes.append("cavity wrap")
+    if "flashing" in haystack:
+        themes.append("flashings")
+    return ", ".join(themes[:5])

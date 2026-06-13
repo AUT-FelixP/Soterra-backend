@@ -11,8 +11,10 @@ requires-python = ">=3.11"
 dependencies = [
   "argon2-cffi>=25,<26",
   "fastapi>=0.116,<1",
+  "huggingface_hub>=0.36,<1",
   "httpx>=0.28,<1",
   "openai>=2.0.0,<3",
+  "pillow>=10,<13",
   "pydantic>=2.11,<3",
   "PyMuPDF>=1.26,<2",
   "pypdf>=5,<6",
@@ -26,9 +28,19 @@ dependencies = [
 package = [
   "presidio-analyzer>=2.2,<3",
   "presidio-anonymizer>=2.2,<3",
-  "python-doctr>=0.11,<1",
+  "python-doctr>=1,<2",
 ]
 demo = ["easyocr>=1.7,<2"]
+local-models = [
+  "accelerate>=1,<2",
+  "albumentations>=2.0.8,<3",
+  "einops>=0.8,<1",
+  "hf_xet>=1,<2",
+  "open_clip_torch>=3,<4",
+  "timm>=1.0.22,<2",
+  "torch>=2.4,<3",
+  "transformers>=4.57,<5",
+]
 
 [project.scripts]
 app = "soterra_backend.api:app"

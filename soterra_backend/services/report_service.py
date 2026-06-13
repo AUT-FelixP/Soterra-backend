@@ -130,10 +130,11 @@ class ReportIngestionService:
         started = time.perf_counter()
         raw_text = ""
         extractor_name = self.settings.extractor_mode
+        extraction_metadata: dict = {}
 
         try:
             logger.info("extraction_start report_id=%s", start.document_id)
-            extraction, raw_text, extractor_name = self._extract(upload, start.stored_file)
+            extraction, raw_text, extractor_name, extraction_metadata = self._extract(upload, start.stored_file)
             logger.info(
                 "extraction_done report_id=%s extractor=%s findings=%d predicted=%d raw_text_len=%d",
                 start.document_id,
@@ -154,7 +155,10 @@ class ReportIngestionService:
                 extraction=normalized,
                 extractor_name=extractor_name,
                 raw_text=raw_text,
-                raw_payload=normalized.model_dump(),
+                raw_payload={
+                    **normalized.model_dump(),
+                    "extraction_metadata": extraction_metadata,
+                },
             )
             logger.info(
                 "persist_done report_id=%s elapsed_ms=%d",
@@ -182,7 +186,7 @@ class ReportIngestionService:
             raise RuntimeError("The report was processed but could not be loaded back from the repository.")
         return report
 
-    def _extract(self, upload: UploadContext, stored_file) -> tuple[ExtractionResult, str, str]:
+    def _extract(self, upload: UploadContext, stored_file) -> tuple[ExtractionResult, str, str, dict]:
         suffix = ".pdf" if upload.file_type == "pdf" else ".docx"
         with tempfile.NamedTemporaryFile(suffix=suffix, prefix="soterra-upload-", delete=False) as tmp_file:
             tmp_file.write(upload.content)
@@ -203,7 +207,7 @@ class ReportIngestionService:
         finally:
             temp_pdf_path.unlink(missing_ok=True)
 
-        return artifacts.extraction, artifacts.raw_text, artifacts.extractor_name
+        return artifacts.extraction, artifacts.raw_text, artifacts.extractor_name, artifacts.metadata
 
 
 class ReportUploadService:

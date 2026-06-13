@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
@@ -22,6 +22,7 @@ class ExtractionArtifacts:
     extraction: ExtractionResult
     raw_text: str
     extractor_name: str
+    metadata: dict = field(default_factory=dict)
 
 
 class ExtractorBackend(Protocol):

@@ -3,7 +3,7 @@ from __future__ import annotations
 from ..config import Settings
 from .base import ExtractorBackend
 from .demo import DemoExtractor
-from .openai_model import OpenAIModelExtractor
+from .model import ModelExtractor
 
 
 def build_extractor(settings: Settings) -> ExtractorBackend:
@@ -16,17 +16,14 @@ def build_extractor(settings: Settings) -> ExtractorBackend:
             return DoctrRulesPresidioExtractor(settings)
         raise RuntimeError(f"Unsupported package extractor: {settings.package_extractor}")
 
-    if mode in {"openai", "model"}:
+    if mode == "model":
         if not settings.allow_model_extraction:
-            raise RuntimeError(
-                "Model extraction is currently disabled. Keep SOTERRA_EXTRACTOR_MODE=package until approval is granted."
-            )
-        provider = settings.model_extractor if mode == "model" else "openai"
-        if provider == "openai":
-            return OpenAIModelExtractor(settings)
-        raise RuntimeError(f"Unsupported model extractor: {provider}")
+            raise RuntimeError("Model extraction is disabled.")
+        return ModelExtractor(settings)
 
     if mode == "demo":
+        if settings.app_env != "test":
+            raise RuntimeError("Demo extraction is only available when SOTERRA_ENV=test.")
         return DemoExtractor()
 
     raise RuntimeError(f"Unsupported extractor mode: {settings.extractor_mode}")

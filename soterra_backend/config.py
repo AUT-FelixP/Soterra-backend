@@ -2,7 +2,15 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+import json
 from pathlib import Path
+
+DEFAULT_MODEL_PROVIDER = "local_transformers"
+DEFAULT_REMOTE_MODEL_PROVIDER = "huggingface"
+DEFAULT_MODEL_ID = "Qwen/Qwen3-4B-Instruct-2507"
+DEFAULT_REMOTE_MODEL_ID = "Qwen/Qwen3-4B-Instruct-2507:fastest"
+DEFAULT_PARSE_MODEL_PROVIDER = "local_transformers"
+DEFAULT_PARSE_MODEL_ID = "nvidia/NVIDIA-Nemotron-Parse-v1.2"
 
 
 def _to_bool(value: str | None, default: bool) -> bool:
@@ -48,6 +56,21 @@ def _default_process_inline() -> bool:
     return bool(os.getenv("VERCEL"))
 
 
+def _default_model_provider() -> str:
+    return DEFAULT_REMOTE_MODEL_PROVIDER if os.getenv("VERCEL") else DEFAULT_MODEL_PROVIDER
+
+
+def _default_parse_provider() -> str:
+    return "openai_compatible" if os.getenv("VERCEL") else DEFAULT_PARSE_MODEL_PROVIDER
+
+
+@dataclass(frozen=True)
+class ModelExtractionConfig:
+    provider: str
+    model_id: str
+    name: str | None = None
+
+
 @dataclass(frozen=True)
 class Settings:
     app_env: str
@@ -59,13 +82,24 @@ class Settings:
     package_extractor: str
     model_extractor: str
     allow_model_extraction: bool
+    soterra_extraction_provider: str
+    soterra_extraction_model_id: str
+    soterra_document_parse_provider: str
+    soterra_document_parse_model_id: str
+    document_parse_max_pages: int
+    document_parse_max_new_tokens: int
+    document_parse_text_in_pictures: bool
+    soterra_agent_provider: str
+    soterra_agent_model_id: str
+    model_extraction_temperature: float
+    model_extraction_max_findings: int
+    model_extraction_timeout_seconds: int
+    model_extraction_retry_count: int
+    model_extraction_models: list[ModelExtractionConfig]
     process_inline: bool
     local_data_dir: Path
     local_db_path: Path
     local_storage_dir: Path
-    openai_api_key: str | None
-    openai_model: str
-    openai_max_pages: int
     package_max_pages: int
     supabase_url: str | None
     supabase_service_role_key: str | None
@@ -94,7 +128,6 @@ class Settings:
         _load_env_file(repo_root)
         local_data_dir = _default_local_data_dir(repo_root)
 
-        openai_api_key = os.getenv("OPENAI_API_KEY")
         supabase_url = os.getenv("SUPABASE_URL")
         supabase_service_role_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
         app_env = os.getenv("SOTERRA_ENV", "production" if os.getenv("VERCEL") else "development").strip().lower()
@@ -109,8 +142,22 @@ class Settings:
         ).strip()
         extractor_mode = os.getenv(
             "SOTERRA_EXTRACTOR_MODE",
-            "openai" if openai_api_key else "package",
+            "model",
         ).strip()
+        extraction_provider = os.getenv("SOTERRA_EXTRACTION_PROVIDER", _default_model_provider()).strip()
+        default_model_id = DEFAULT_REMOTE_MODEL_ID if os.getenv("VERCEL") else DEFAULT_MODEL_ID
+        extraction_model_id = os.getenv("SOTERRA_EXTRACTION_MODEL_ID", default_model_id).strip()
+        document_parse_provider = os.getenv("SOTERRA_DOCUMENT_PARSE_PROVIDER", _default_parse_provider()).strip()
+        document_parse_model_id = os.getenv("SOTERRA_DOCUMENT_PARSE_MODEL_ID", DEFAULT_PARSE_MODEL_ID).strip()
+        agent_provider = os.getenv("SOTERRA_AGENT_PROVIDER", _default_model_provider()).strip()
+        agent_model_id = os.getenv(
+            "SOTERRA_AGENT_MODEL_ID",
+            default_model_id,
+        ).strip()
+        extraction_models = _load_model_extraction_configs(
+            default_provider=extraction_provider,
+            default_model_id=extraction_model_id,
+        )
 
         return cls(
             app_env=app_env,
@@ -120,8 +167,22 @@ class Settings:
             repository_mode=repository_mode,
             extractor_mode=extractor_mode,
             package_extractor=os.getenv("SOTERRA_PACKAGE_EXTRACTOR", "doctr_rules_presidio").strip(),
-            model_extractor=os.getenv("SOTERRA_MODEL_EXTRACTOR", "openai").strip(),
-            allow_model_extraction=_to_bool(os.getenv("SOTERRA_ALLOW_MODEL_EXTRACTION"), False),
+            model_extractor=extraction_provider,
+            allow_model_extraction=_to_bool(os.getenv("SOTERRA_ALLOW_MODEL_EXTRACTION"), True),
+            soterra_extraction_provider=extraction_provider,
+            soterra_extraction_model_id=extraction_model_id,
+            soterra_document_parse_provider=document_parse_provider,
+            soterra_document_parse_model_id=document_parse_model_id,
+            document_parse_max_pages=int(os.getenv("SOTERRA_DOCUMENT_PARSE_MAX_PAGES", "12")),
+            document_parse_max_new_tokens=int(os.getenv("SOTERRA_DOCUMENT_PARSE_MAX_NEW_TOKENS", "9000")),
+            document_parse_text_in_pictures=_to_bool(os.getenv("SOTERRA_DOCUMENT_PARSE_TEXT_IN_PICTURES"), False),
+            soterra_agent_provider=agent_provider,
+            soterra_agent_model_id=agent_model_id,
+            model_extraction_temperature=float(os.getenv("SOTERRA_MODEL_EXTRACTION_TEMPERATURE", "0.0")),
+            model_extraction_max_findings=int(os.getenv("SOTERRA_MODEL_EXTRACTION_MAX_FINDINGS", "40")),
+            model_extraction_timeout_seconds=int(os.getenv("SOTERRA_MODEL_EXTRACTION_TIMEOUT_SECONDS", "90")),
+            model_extraction_retry_count=int(os.getenv("SOTERRA_MODEL_EXTRACTION_RETRY_COUNT", "1")),
+            model_extraction_models=extraction_models,
             process_inline=_to_bool(os.getenv("SOTERRA_PROCESS_INLINE"), _default_process_inline()),
             local_data_dir=local_data_dir,
             local_db_path=Path(
@@ -136,9 +197,6 @@ class Settings:
                     str(local_data_dir / "storage"),
                 )
             ),
-            openai_api_key=openai_api_key,
-            openai_model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
-            openai_max_pages=int(os.getenv("OPENAI_MAX_PAGES", "8")),
             package_max_pages=int(os.getenv("SOTERRA_PACKAGE_MAX_PAGES", "12")),
             supabase_url=supabase_url,
             supabase_service_role_key=supabase_service_role_key,
@@ -161,3 +219,37 @@ class Settings:
             smtp_from_name=os.getenv("SOTERRA_EMAIL_FROM_NAME", "Soterra"),
             smtp_use_tls=_to_bool(os.getenv("SOTERRA_SMTP_USE_TLS", os.getenv("SMTP_USE_TLS")), True),
         )
+
+
+def _load_model_extraction_configs(
+    *,
+    default_provider: str,
+    default_model_id: str,
+) -> list[ModelExtractionConfig]:
+    raw_json = os.getenv("SOTERRA_EXTRACTION_MODELS_JSON")
+    if raw_json:
+        try:
+            decoded = json.loads(raw_json)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("SOTERRA_EXTRACTION_MODELS_JSON must be valid JSON.") from exc
+        if not isinstance(decoded, list):
+            raise RuntimeError("SOTERRA_EXTRACTION_MODELS_JSON must be a list of model configs.")
+        configs = []
+        for index, item in enumerate(decoded, start=1):
+            if not isinstance(item, dict):
+                raise RuntimeError("Each SOTERRA_EXTRACTION_MODELS_JSON item must be an object.")
+            provider = str(item.get("provider") or "").strip()
+            model_id = str(item.get("model_id") or item.get("modelId") or "").strip()
+            name = str(item.get("name") or f"model-{index}").strip()
+            if provider and model_id:
+                configs.append(ModelExtractionConfig(provider=provider, model_id=model_id, name=name))
+        if configs:
+            return configs
+
+    return [
+        ModelExtractionConfig(
+            provider=default_provider or DEFAULT_MODEL_PROVIDER,
+            model_id=default_model_id or DEFAULT_MODEL_ID,
+            name="primary",
+        )
+    ]
