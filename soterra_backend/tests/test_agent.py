@@ -773,7 +773,7 @@ class AgentToolCoverageTest(unittest.TestCase):
             {
                 "SOTERRA_AGENT_ENABLED": "true",
                 "SOTERRA_AGENT_PROVIDER": "local_transformers",
-                "SOTERRA_AGENT_MODEL_ID": "Qwen/Qwen3-4B-Instruct-2507",
+                "SOTERRA_AGENT_MODEL_ID": "HuggingFaceTB/SmolLM2-1.7B-Instruct",
             },
         ):
             status = service.status()
@@ -787,7 +787,7 @@ class AgentToolCoverageTest(unittest.TestCase):
             {
                 "SOTERRA_AGENT_ENABLED": "true",
                 "SOTERRA_AGENT_PROVIDER": "huggingface",
-                "SOTERRA_AGENT_MODEL_ID": "Qwen/Qwen3-4B-Instruct-2507:fastest",
+                "SOTERRA_AGENT_MODEL_ID": "HuggingFaceTB/SmolLM2-1.7B-Instruct",
                 "HF_TOKEN": "test-key",
             },
         ):
@@ -795,7 +795,7 @@ class AgentToolCoverageTest(unittest.TestCase):
         self.assertTrue(status["enabled"])
         self.assertTrue(status["configured"])
         self.assertEqual(status["provider"], "huggingface")
-        self.assertEqual(status["model_id"], "Qwen/Qwen3-4B-Instruct-2507:fastest")
+        self.assertEqual(status["model_id"], "HuggingFaceTB/SmolLM2-1.7B-Instruct")
 
     def test_agent_status_uses_vercel_remote_defaults_with_hf_token(self) -> None:
         service = SoterraAgentService(FakeRepository())
@@ -811,7 +811,7 @@ class AgentToolCoverageTest(unittest.TestCase):
             status = service.status()
         self.assertTrue(status["configured"])
         self.assertEqual(status["provider"], "huggingface")
-        self.assertEqual(status["model_id"], "Qwen/Qwen3-4B-Instruct-2507:fastest")
+        self.assertEqual(status["model_id"], "HuggingFaceTB/SmolLM2-1.7B-Instruct")
 
 
 if __name__ == "__main__":

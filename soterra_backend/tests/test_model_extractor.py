@@ -106,7 +106,7 @@ class FakeDocumentTextExtractor:
 
 
 class ModelExtractorTest(unittest.TestCase):
-    def test_default_model_configuration_uses_qwen_and_nemotron_parse(self) -> None:
+    def test_default_model_configuration_uses_smollm_and_nemotron_parse(self) -> None:
         with patch("soterra_backend.config._load_env_file", return_value=None), patch.dict("os.environ", {}, clear=True):
             settings = Settings.from_env()
 
@@ -117,7 +117,7 @@ class ModelExtractorTest(unittest.TestCase):
         self.assertEqual(settings.soterra_agent_model_id, DEFAULT_MODEL_ID)
         self.assertEqual(settings.soterra_document_parse_model_id, DEFAULT_PARSE_MODEL_ID)
 
-    def test_vercel_defaults_use_remote_qwen_and_remote_nemotron_parse_provider(self) -> None:
+    def test_vercel_defaults_use_remote_smollm_and_remote_nemotron_parse_provider(self) -> None:
         with patch("soterra_backend.config._load_env_file", return_value=None), patch.dict("os.environ", {"VERCEL": "1"}, clear=True):
             settings = Settings.from_env()
 

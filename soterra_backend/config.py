@@ -7,8 +7,8 @@ from pathlib import Path
 
 DEFAULT_MODEL_PROVIDER = "local_transformers"
 DEFAULT_REMOTE_MODEL_PROVIDER = "huggingface"
-DEFAULT_MODEL_ID = "Qwen/Qwen3-4B-Instruct-2507"
-DEFAULT_REMOTE_MODEL_ID = "Qwen/Qwen3-4B-Instruct-2507:fastest"
+DEFAULT_MODEL_ID = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
+DEFAULT_REMOTE_MODEL_ID = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
 DEFAULT_PARSE_MODEL_PROVIDER = "local_transformers"
 DEFAULT_PARSE_MODEL_ID = "nvidia/NVIDIA-Nemotron-Parse-v1.2"
 

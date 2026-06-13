@@ -53,6 +53,7 @@ class HuggingFaceInferenceExtractionClient:
                     "content": (
                         f"{user_prompt}\n\n"
                         "Return one JSON object only. Do not wrap it in markdown. "
+                        "Do not return or copy the JSON schema. Fill the object with values extracted from the document. "
                         "The object must match this JSON schema:\n"
                         f"{json.dumps(schema)[:16000]}"
                     ),
@@ -98,6 +99,7 @@ class LocalTransformersExtractionClient:
                 "content": (
                     f"{user_prompt}\n\n"
                     "Return only the JSON object. No markdown, no explanation. "
+                    "Do not return or copy the JSON schema. Fill the object with values extracted from the document. "
                     "The JSON object must match this schema:\n"
                     f"{json.dumps(schema)[:12000]}"
                 ),

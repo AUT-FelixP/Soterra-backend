@@ -69,6 +69,8 @@ class NemotronParseDocumentTextExtractor:
 
     def extract_text(self, pdf_path: Path) -> DocumentTextResult:
         try:
+            if self.provider in {"package", "package_fallback", "package-only", "package_only"}:
+                return self.fallback.extract_text(pdf_path)
             if self.provider in {"local_transformers", "transformers_local", "local-hf", "local_hf"}:
                 return self._extract_with_local_transformers(pdf_path)
             if self.provider in {"openai_compatible", "openai-compatible", "vllm"}:

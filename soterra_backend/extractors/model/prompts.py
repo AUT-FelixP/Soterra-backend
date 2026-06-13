@@ -7,6 +7,7 @@ SYSTEM_PROMPT = """
 You are Soterra's inspection report extraction engine.
 
 Return exactly one JSON object that matches the provided schema. No markdown. No commentary.
+Do not return the schema itself. Do not include keys like "type", "properties", or "required" unless those words are present in the report text as construction content.
 
 Extract only construction issues that are clearly supported by the report text:
 - failed checklist items
