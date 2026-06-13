@@ -7,6 +7,8 @@ FastAPI backend for report ingestion, extraction, analytics, and persistence.
 1. Create a virtual environment inside this folder.
 2. Install the package in editable mode:
    `python -m pip install -e .`
+   For direct local Hugging Face model loading, use:
+   `python -m pip install -e .[local-models]`
 3. Start the API:
    `python -m uvicorn soterra_backend.api:app --host 127.0.0.1 --port 8001`
 
@@ -16,21 +18,69 @@ FastAPI backend for report ingestion, extraction, analytics, and persistence.
 - Framework/runtime: FastAPI / Python
 - App entrypoint comes from `pyproject.toml`:
   `app = "soterra_backend.api:app"`
+- `requirements.txt` installs the package OCR dependencies used only as fallback when model extraction fails.
+- Local Transformers models exceed typical Vercel serverless memory/cold-start limits. For Vercel, use Hugging Face InferenceClient for SmolLM2 agent/extraction calls, and use a separate hosted Nemotron Parse endpoint if you want NVIDIA Parse in production.
 
 ## Required environment variables
 
-- `HF_TOKEN` for the smolagents chat agent when `SOTERRA_AGENT_ENABLED=true`
+- `SOTERRA_EXTRACTOR_MODE=model`
+- `HF_TOKEN=...`
+- `SOTERRA_DOCUMENT_PARSE_PROVIDER=local_transformers` locally, or `openai_compatible` on Vercel
+- `SOTERRA_DOCUMENT_PARSE_MODEL_ID=nvidia/NVIDIA-Nemotron-Parse-v1.2`
+- `SOTERRA_DOCUMENT_PARSE_BASE_URL=https://your-nemotron-parse-endpoint/v1` on Vercel if NVIDIA Parse is hosted separately
+- `SOTERRA_DOCUMENT_PARSE_API_KEY=...` if the Parse endpoint requires auth
+- `SOTERRA_DOCUMENT_PARSE_MAX_PAGES=12`
+- `SOTERRA_EXTRACTION_PROVIDER=local_transformers` locally, or `huggingface` on Vercel
+- `SOTERRA_EXTRACTION_MODEL_ID=HuggingFaceTB/SmolLM2-1.7B-Instruct`
+- `SOTERRA_EXTRACTION_MODELS_JSON` optional list of provider/model configs for model comparison before fallback
 - `SOTERRA_AGENT_ENABLED=true`
-- `SOTERRA_AGENT_MODEL_PROVIDER=huggingface`
-- `SOTERRA_AGENT_MODEL_ID=Qwen/Qwen2.5-72B-Instruct`
-- `SOTERRA_AGENT_HF_PROVIDER` optional Hugging Face Inference Provider name
-- `OPENAI_API_KEY` only when using the OpenAI report extractor or OpenAI agent provider
-- `OPENAI_MODEL` only when using the OpenAI report extractor or OpenAI agent provider
-- `SOTERRA_MODEL_EXTRACTOR`
-- `SOTERRA_PACKAGE_EXTRACTOR`
+- `SOTERRA_AGENT_PROVIDER=local_transformers` locally, or `huggingface` on Vercel
+- `SOTERRA_AGENT_MODEL_ID=HuggingFaceTB/SmolLM2-1.7B-Instruct`
 - `SOTERRA_REPOSITORY_MODE`
 - `SOTERRA_STORAGE_MODE`
-- `SOTERRA_EXTRACTOR_MODE`
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY`
 - `SUPABASE_STORAGE_BUCKET`
+
+Optional fallback/dev variables:
+- `SOTERRA_PACKAGE_EXTRACTOR=doctr_rules_presidio` only for package fallback
+
+Local direct model notes:
+- Nemotron Parse v1.2 is loaded with `AutoModel.from_pretrained(..., trust_remote_code=True, dtype="auto")`.
+- Agent and structured extraction local mode use SmolLM2 through `AutoTokenizer` plus `AutoModelForMultimodalLM` when the installed Transformers version provides it; otherwise the code falls back to `AutoModelForCausalLM`.
+- Vercel should use `huggingface` for hosted SmolLM2 calls through `huggingface_hub.InferenceClient`. It does not install local `torch`/`transformers` by default.
+
+## Apply Supabase database migrations
+
+Uploading the backend files to Git does not update the tables in Supabase. When a
+new file is added under `supabase/migrations`, run that SQL against the hosted
+Supabase database before starting the updated backend.
+
+For the tenant-isolation update:
+
+1. Open the Supabase project dashboard.
+2. Open **SQL Editor** and create a new query.
+3. Paste and run the contents of:
+   `supabase/migrations/20260601000000_production_tenant_hardening.sql`
+4. Restart the backend.
+
+To verify the specific `jobs.tenant_id` repair, run this in the Supabase SQL
+Editor:
+
+```sql
+select column_name
+from information_schema.columns
+where table_schema = 'public'
+  and table_name = 'jobs'
+  and column_name = 'tenant_id';
+```
+
+The result should contain one row named `tenant_id`.
+
+### Troubleshooting: `column jobs.tenant_id does not exist`
+
+This error means the Python backend is newer than the hosted Supabase schema.
+The backend filters extraction jobs by `tenant_id` so one customer's jobs cannot
+be returned to another customer. Apply the tenant-isolation migration above to
+add the missing column, fill it for existing jobs, and enable the matching
+database protections.
