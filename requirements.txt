@@ -1,1 +1,1 @@
--e .[package]
+-e .[package,local-models]
