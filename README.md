@@ -7,8 +7,6 @@ FastAPI backend for report ingestion, extraction, analytics, and persistence.
 1. Create a virtual environment inside this folder.
 2. Install the package in editable mode:
    `python -m pip install -e .`
-   For direct local Hugging Face model loading, use:
-   `python -m pip install -e .[local-models]`
 3. Start the API:
    `python -m uvicorn soterra_backend.api:app --host 127.0.0.1 --port 8001`
 
@@ -18,23 +16,20 @@ FastAPI backend for report ingestion, extraction, analytics, and persistence.
 - Framework/runtime: FastAPI / Python
 - App entrypoint comes from `pyproject.toml`:
   `app = "soterra_backend.api:app"`
-- `requirements.txt` installs the package OCR dependencies used only as fallback when model extraction fails.
-- Local Transformers models exceed typical Vercel serverless memory/cold-start limits. For Vercel, use Hugging Face InferenceClient for SmolLM2 agent/extraction calls, and use a separate hosted Nemotron Parse endpoint if you want NVIDIA Parse in production.
+- `requirements.txt` installs the lightweight backend only. Models are called through hosted Hugging Face Inference Providers, so Vercel does not install Torch or Transformers.
 
 ## Required environment variables
 
 - `SOTERRA_EXTRACTOR_MODE=model`
 - `HF_TOKEN=...`
-- `SOTERRA_DOCUMENT_PARSE_PROVIDER=local_transformers` locally, or `openai_compatible` on Vercel
-- `SOTERRA_DOCUMENT_PARSE_MODEL_ID=nvidia/NVIDIA-Nemotron-Parse-v1.2`
-- `SOTERRA_DOCUMENT_PARSE_BASE_URL=https://your-nemotron-parse-endpoint/v1` on Vercel if NVIDIA Parse is hosted separately
-- `SOTERRA_DOCUMENT_PARSE_API_KEY=...` if the Parse endpoint requires auth
+- `SOTERRA_DOCUMENT_PARSE_PROVIDER=huggingface`
+- `SOTERRA_DOCUMENT_PARSE_MODEL_ID=HuggingFaceTB/SmolVLM-256M-Instruct`
 - `SOTERRA_DOCUMENT_PARSE_MAX_PAGES=12`
-- `SOTERRA_EXTRACTION_PROVIDER=local_transformers` locally, or `huggingface` on Vercel
+- `SOTERRA_EXTRACTION_PROVIDER=huggingface`
 - `SOTERRA_EXTRACTION_MODEL_ID=HuggingFaceTB/SmolLM2-1.7B-Instruct`
 - `SOTERRA_EXTRACTION_MODELS_JSON` optional list of provider/model configs for model comparison before fallback
 - `SOTERRA_AGENT_ENABLED=true`
-- `SOTERRA_AGENT_PROVIDER=local_transformers` locally, or `huggingface` on Vercel
+- `SOTERRA_AGENT_PROVIDER=huggingface`
 - `SOTERRA_AGENT_MODEL_ID=HuggingFaceTB/SmolLM2-1.7B-Instruct`
 - `SOTERRA_REPOSITORY_MODE`
 - `SOTERRA_STORAGE_MODE`
@@ -42,13 +37,8 @@ FastAPI backend for report ingestion, extraction, analytics, and persistence.
 - `SUPABASE_SERVICE_ROLE_KEY`
 - `SUPABASE_STORAGE_BUCKET`
 
-Optional fallback/dev variables:
-- `SOTERRA_PACKAGE_EXTRACTOR=doctr_rules_presidio` only for package fallback
-
-Local direct model notes:
-- Nemotron Parse v1.2 is loaded with `AutoModel.from_pretrained(..., trust_remote_code=True, dtype="auto")`.
-- Agent and structured extraction local mode use SmolLM2 through `AutoTokenizer` plus `AutoModelForMultimodalLM` when the installed Transformers version provides it; otherwise the code falls back to `AutoModelForCausalLM`.
-- Vercel should use `huggingface` for hosted SmolLM2 calls through `huggingface_hub.InferenceClient`. It does not install local `torch`/`transformers` by default.
+Optional fallback/dev variable:
+- `SOTERRA_PACKAGE_EXTRACTOR=doctr_rules_presidio` only if you intentionally install package OCR extras for fallback testing
 
 ## Apply Supabase database migrations
 
