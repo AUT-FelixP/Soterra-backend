@@ -44,6 +44,9 @@ class InsightsAgentService:
             all_findings=snapshot.findings,
         )
 
+        if self._provider() == "native":
+            return fallback
+
         try:
             ai_payload = self._generate_with_agent(
                 findings_context=_compact_findings(findings),
@@ -54,6 +57,10 @@ class InsightsAgentService:
         except Exception as exc:
             logger.info("ai_insights_fallback tenant=%s reason=%s", tenant_id, type(exc).__name__)
             return fallback
+
+    def _provider(self) -> str:
+        configured = getattr(self.settings, "soterra_insights_provider", None)
+        return str(configured or os.getenv("SOTERRA_INSIGHTS_PROVIDER", "native")).strip().lower()
 
     def _load_snapshot_with_retry(self, tenant_id: str) -> RepositorySnapshot | None:
         last_error: Exception | None = None
@@ -129,14 +136,16 @@ class InsightsAgentService:
             summary.append("No extracted findings match this filter yet. Upload more reports or choose a broader inspection type.")
 
         return {
-            "title": "AI inspection learning",
-            "description": "Practical lessons from your uploaded inspection reports to help teams prepare for future inspections.",
+            "title": "Inspection learning",
+            "description": "Generated from extracted inspection data to help teams prepare for future inspections.",
             "filter": {"selected": selected, "options": options},
             "generatedAt": datetime.now(tz=UTC).isoformat(),
             "dataScope": "tenant",
+            "engine": "native",
+            "generatedBy": "deterministic_inspection_analytics",
             "aiAvailable": False,
-            "fallbackMessage": "AI-enhanced insights are unavailable right now, so these recommendations use deterministic inspection analytics.",
-            "confidenceNote": "Generated from tenant-scoped extracted findings. AI guidance falls back to deterministic analytics when the model is unavailable.",
+            "fallbackMessage": None,
+            "confidenceNote": "Generated from tenant-scoped extracted findings using deterministic inspection analytics.",
             "executiveSummary": summary[:4],
             "currentProjectActions": current_actions,
             "preInspectionChecklist": checklist,
@@ -217,13 +226,15 @@ def _build_prompt(*, findings_context: list[dict], deterministic: dict, selected
 
 def _repository_unavailable_response(selected: str) -> dict:
     return {
-        "title": "AI inspection learning",
-        "description": "Practical lessons from your uploaded inspection reports to help teams prepare for future inspections.",
+        "title": "Inspection learning",
+        "description": "Generated from extracted inspection data to help teams prepare for future inspections.",
         "filter": {"selected": selected, "options": [selected] if selected != "All" else ["All"]},
         "generatedAt": datetime.now(tz=UTC).isoformat(),
         "dataScope": "tenant",
+        "engine": "native",
+        "generatedBy": "deterministic_inspection_analytics",
         "aiAvailable": False,
-        "fallbackMessage": "AI-enhanced insights are unavailable because tenant inspection data could not be loaded.",
+        "fallbackMessage": "Tenant inspection data could not be loaded.",
         "confidenceNote": "Tenant-scoped inspection data could not be loaded just now. Try refreshing; no cross-tenant data was used.",
         "executiveSummary": [
             "Inspection learning is temporarily unavailable because the tenant report snapshot could not be loaded.",

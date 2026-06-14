@@ -4,35 +4,47 @@ from collections import Counter, defaultdict
 from datetime import UTC, date, datetime
 from statistics import mean
 
+from .issue_intelligence import enrich_finding, enrich_findings, group_similar_issues
 from .models import RepositorySnapshot
 from .utils import safe_int
 
 
+def _display_findings(findings: list[dict]) -> list[dict]:
+    actionable = enrich_findings(findings, actionable_only=True)
+    return actionable or enrich_findings(findings, actionable_only=False)
+
+
 def build_report_list(snapshot: RepositorySnapshot) -> dict:
-    items = [_report_payload(document, snapshot.findings) for document in snapshot.documents]
+    findings = _display_findings(snapshot.findings)
+    items = [_report_payload(document, findings) for document in snapshot.documents]
     return {"items": items}
 
 
 def build_report_detail(snapshot: RepositorySnapshot, report_id: str) -> dict | None:
+    findings = _display_findings(snapshot.findings)
     for document in snapshot.documents:
         if document["id"] == report_id:
-            return {"item": _report_payload(document, snapshot.findings)}
+            return {"item": _report_payload(document, findings)}
     return None
 
 
 def build_issues_list(snapshot: RepositorySnapshot) -> dict:
+    findings = _display_findings(snapshot.findings)
     return {
         "items": [
             {
                 "id": finding["id"],
-                "description": finding["title"],
+                "description": finding["display_title"],
+                "summary": finding["plain_english_summary"],
+                "project": finding.get("project_name"),
                 "site": finding["site_name"],
+                "location": finding.get("location") or finding.get("unit_label"),
                 "dateIdentified": finding["created_at"][:10],
                 "status": finding["status"],
                 "reinspections": finding["reinspections"],
                 "closedAt": finding["closed_at"][:10] if finding.get("closed_at") else None,
             }
-            for finding in snapshot.findings
+            for finding in findings
         ]
     }
 
@@ -41,11 +53,15 @@ def build_issue_detail(snapshot: RepositorySnapshot, issue_id: str) -> dict | No
     finding = next((item for item in snapshot.findings if item["id"] == issue_id), None)
     if not finding:
         return None
+    finding = enrich_finding(finding)
     return {
         "item": {
             "id": finding["id"],
-            "description": finding["title"],
+            "description": finding["display_title"],
+            "summary": finding["plain_english_summary"],
+            "project": finding.get("project_name"),
             "site": finding["site_name"],
+            "location": finding.get("location") or finding.get("unit_label"),
             "dateIdentified": finding["created_at"][:10],
             "status": finding["status"],
             "reinspections": finding["reinspections"],
@@ -56,7 +72,7 @@ def build_issue_detail(snapshot: RepositorySnapshot, issue_id: str) -> dict | No
 
 def build_dashboard_overview(snapshot: RepositorySnapshot) -> dict:
     reports = snapshot.documents
-    findings = snapshot.findings
+    findings = _display_findings(snapshot.findings)
     total_reports = len(reports)
     total_findings = len(findings)
     open_findings = [item for item in findings if item["status"] == "Open"]
@@ -92,13 +108,14 @@ def build_dashboard_overview(snapshot: RepositorySnapshot) -> dict:
 
 
 def build_company_page(snapshot: RepositorySnapshot) -> dict:
+    findings = _display_findings(snapshot.findings)
     project_groups: dict[str, list[dict]] = defaultdict(list)
     for document in snapshot.documents:
         project_groups[document["project_slug"]].append(document)
 
     projects = []
     for slug, documents in project_groups.items():
-        project_findings = [item for item in snapshot.findings if item["project_slug"] == slug]
+        project_findings = [item for item in findings if item["project_slug"] == slug]
         projects.append(
             {
                 "slug": slug,
@@ -114,13 +131,14 @@ def build_company_page(snapshot: RepositorySnapshot) -> dict:
         "title": "Company performance",
         "description": "A company-wide view of results across all projects.",
         "projects": projects,
-        "inspectionTypes": _inspection_type_summary(snapshot.findings, snapshot.documents),
+        "inspectionTypes": _inspection_type_summary(findings, snapshot.documents),
     }
 
 
 def build_performance_page(snapshot: RepositorySnapshot, inspection_type: str = "All types") -> dict:
-    findings = _filter_findings_by_type(snapshot.findings, inspection_type)
-    options = ["All types"] + sorted({item["inspection_type"] for item in snapshot.findings})
+    all_findings = _display_findings(snapshot.findings)
+    findings = _filter_findings_by_type(all_findings, inspection_type)
+    options = ["All types"] + sorted({item["inspection_type"] for item in all_findings})
     recurring_scores = {item["label"]: item for item in _recurring_risk(findings)}
     driver_rows = []
     for index, row in enumerate(_top_failure_driver_rows(findings, limit=8), start=1):
@@ -158,14 +176,15 @@ def build_performance_page(snapshot: RepositorySnapshot, inspection_type: str = 
 
 
 def build_insights_page(snapshot: RepositorySnapshot, inspection_type: str = "All inspection types") -> dict:
+    all_findings = _display_findings(snapshot.findings)
     findings = _filter_findings_by_type(
-        snapshot.findings,
+        all_findings,
         inspection_type if inspection_type != "All inspection types" else "All types",
     )
     repeated_patterns = []
     grouped: dict[str, list[dict]] = defaultdict(list)
     for item in findings:
-        grouped[item["title"]].append(item)
+        grouped[item["display_title"]].append(item)
 
     for row in _top_failure_driver_rows(findings, limit=8):
         matching = grouped.get(row["issue"], [])
@@ -209,13 +228,14 @@ def build_insights_page(snapshot: RepositorySnapshot, inspection_type: str = "Al
         "description": "A simple view of the main problem areas showing up across reports.",
         "filter": {
             "selected": inspection_type,
-            "options": ["All inspection types"] + sorted({item["inspection_type"] for item in snapshot.findings}),
+            "options": ["All inspection types"] + sorted({item["inspection_type"] for item in all_findings}),
         },
         "rootCauses": [item["label"] for item in root_cause_items] or ["No clear cause listed yet"],
         "rootCauseItems": root_cause_items,
         "highRiskAreas": [item["label"] for item in high_risk_area_items] or ["Project-wide"],
         "highRiskAreaItems": high_risk_area_items,
         "repeatedPatterns": repeated_patterns,
+        "issueThemes": group_similar_issues(findings)[:8],
         "severityLegend": _severity_legend(),
         "tableControls": {
             "searchFields": ["issue", "categories", "locations"],
@@ -241,7 +261,8 @@ def build_project_page(snapshot: RepositorySnapshot, slug: str) -> dict | None:
     documents = [item for item in snapshot.documents if item["project_slug"] == slug]
     if not documents:
         return None
-    findings = [item for item in snapshot.findings if item["project_slug"] == slug]
+    company_findings = _display_findings(snapshot.findings)
+    findings = [item for item in company_findings if item["project_slug"] == slug]
     project_name = documents[0]["project_name"]
     return {
         "title": f"Project overview - {project_name}",
@@ -272,16 +293,16 @@ def build_project_page(snapshot: RepositorySnapshot, slug: str) -> dict | None:
             {
                 "label": "Issues found",
                 "projectValue": str(len(findings)),
-                "companyValue": str(len(snapshot.findings)),
-                "deltaLabel": "Higher" if len(findings) >= len(snapshot.findings) else "Lower",
-                "tone": "critical" if len(findings) >= len(snapshot.findings) else "success",
+                "companyValue": str(len(company_findings)),
+                "deltaLabel": "Higher" if len(findings) >= len(company_findings) else "Lower",
+                "tone": "critical" if len(findings) >= len(company_findings) else "success",
             },
             {
                 "label": "Issues / inspection",
                 "projectValue": f"{len(findings) / max(len(documents), 1):.1f}",
-                "companyValue": f"{len(snapshot.findings) / max(len(snapshot.documents), 1):.1f}",
+                "companyValue": f"{len(company_findings) / max(len(snapshot.documents), 1):.1f}",
                 "deltaLabel": "Higher"
-                if len(findings) / max(len(documents), 1) >= len(snapshot.findings) / max(len(snapshot.documents), 1)
+                if len(findings) / max(len(documents), 1) >= len(company_findings) / max(len(snapshot.documents), 1)
                 else "Lower",
                 "tone": "critical",
             },
@@ -289,7 +310,8 @@ def build_project_page(snapshot: RepositorySnapshot, slug: str) -> dict | None:
         "recentFailedItems": [
             {
                 "id": item["id"],
-                "issue": item["title"],
+                "issue": item["display_title"],
+                "summary": item["plain_english_summary"],
                 "type": item["trade"],
                 "date": _pretty_date(item["created_at"]),
                 "status": item["status"],
@@ -333,7 +355,7 @@ def build_dashboard_risk(
     selected = next((item for item in predictions if item["id"] == inspection_id), None) or (
         predictions[0] if predictions else None
     )
-    likely = _likely_failures(snapshot.findings, selected["inspection_type"] if selected else "")
+    likely = _likely_failures(_display_findings(snapshot.findings), selected["inspection_type"] if selected else "")
 
     return {
         "title": "Upcoming inspection risk",
@@ -400,7 +422,7 @@ def build_inspection_risk_page(
     predictions = [item for item in predictions if item["daysAway"] <= max_days]
     inspection_types = sorted({item["inspection_type"] for item in predictions})
     selected_type = inspection_type or (inspection_types[0] if inspection_types else "General")
-    likely = _likely_failures(snapshot.findings, selected_type)
+    likely = _likely_failures(_display_findings(snapshot.findings), selected_type)
 
     return {
         "title": "Upcoming Inspection Risk",
@@ -441,6 +463,7 @@ def build_inspection_risk_page(
 
 
 def build_tracker_page(snapshot: RepositorySnapshot, filters: dict[str, str | None]) -> dict:
+    findings = _display_findings(snapshot.findings)
     selected_site = filters.get("site") or (snapshot.documents[0]["site_name"] if snapshot.documents else "Unknown site")
     selected_status = filters.get("status") or "All"
     selected_type = filters.get("type") or "All"
@@ -451,7 +474,7 @@ def build_tracker_page(snapshot: RepositorySnapshot, filters: dict[str, str | No
     limit_days = 7 if selected_date_range == "7d" else 14 if selected_date_range == "14d" else 30
     issues = [
         item
-        for item in snapshot.findings
+        for item in findings
         if item["site_name"] == selected_site
         and (selected_status == "All" or item["status"] == selected_status)
         and (selected_type == "All" or item["trade"] == selected_type)
@@ -463,13 +486,13 @@ def build_tracker_page(snapshot: RepositorySnapshot, filters: dict[str, str | No
     site_documents = [item for item in snapshot.documents if item["site_name"] == selected_site]
     site_units: list[str] = []
     for document in site_documents:
-        for unit in _document_units(document, snapshot.findings):
+        for unit in _document_units(document, findings):
             if unit not in site_units:
                 site_units.append(unit)
 
     inspection_documents = []
     for document in site_documents:
-        document_findings = [item for item in snapshot.findings if item["document_id"] == document["id"]]
+        document_findings = [item for item in findings if item["document_id"] == document["id"]]
         inspection_documents.append(
             {
                 "id": document["id"],
@@ -478,7 +501,7 @@ def build_tracker_page(snapshot: RepositorySnapshot, filters: dict[str, str | No
                 "reportDate": document["report_date"],
                 "status": document["status"],
                 "issueCount": len(document_findings),
-                "unitCount": len(_document_units(document, snapshot.findings)),
+                "unitCount": len(_document_units(document, findings)),
             }
         )
 
@@ -502,7 +525,7 @@ def build_tracker_page(snapshot: RepositorySnapshot, filters: dict[str, str | No
         "inspectionDocuments": inspection_documents,
         "filters": {
             "statuses": ["All", "Open", "Ready", "Closed"],
-            "types": ["All"] + sorted({item["trade"] for item in snapshot.findings}),
+            "types": ["All"] + sorted({item["trade"] for item in findings}),
             "dateRanges": [
                 {"label": "Last 7 days", "value": "7d"},
                 {"label": "Last 14 days", "value": "14d"},
@@ -514,11 +537,15 @@ def build_tracker_page(snapshot: RepositorySnapshot, filters: dict[str, str | No
         },
         "issueRegister": {
             "siteSelected": True,
-            "columns": ["Issue", "Type", "Date Identified", "Days Open", "Status"],
+            "columns": ["Issue", "Project", "Site", "Location", "Type", "Date Identified", "Days Open", "Status"],
             "items": [
                 {
                     "id": item["id"],
-                    "issue": item["title"],
+                    "issue": item["display_title"],
+                    "summary": item["plain_english_summary"],
+                    "project": item.get("project_name"),
+                    "site": item.get("site_name"),
+                    "location": item.get("location") or item.get("unit_label"),
                     "type": item["trade"],
                     "dateIdentified": item["created_at"][:10],
                     "daysOpen": _days_open(item["created_at"]),
@@ -530,13 +557,15 @@ def build_tracker_page(snapshot: RepositorySnapshot, filters: dict[str, str | No
         "selectedIssue": (
             {
                 "id": selected_issue["id"],
-                "issue": selected_issue["title"],
+                "issue": selected_issue["display_title"],
+                "project": selected_issue.get("project_name"),
                 "site": selected_issue["site_name"],
+                "location": selected_issue.get("location") or selected_issue.get("unit_label"),
                 "type": selected_issue["trade"],
                 "dateIdentified": selected_issue["created_at"][:10],
                 "daysOpen": _days_open(selected_issue["created_at"]),
                 "status": selected_issue["status"],
-                "inspectionNote": selected_issue["description"],
+                "inspectionNote": selected_issue["plain_english_summary"],
                 "reinspections": selected_issue["reinspections"],
                 "subcontractorName": "Trade Contractor",
                 "subcontractorEmail": "trade@example.com",
@@ -551,7 +580,7 @@ def build_tracker_page(snapshot: RepositorySnapshot, filters: dict[str, str | No
 
 
 def build_dashboard_live_tracker(snapshot: RepositorySnapshot) -> dict:
-    findings = snapshot.findings
+    findings = _display_findings(snapshot.findings)
     return {
         "openIssues": len([item for item in findings if item["status"] == "Open"]),
         "overdue": len([item for item in findings if item["status"] == "Open" and _days_open(item["created_at"]) > 7]),
@@ -562,13 +591,14 @@ def build_dashboard_live_tracker(snapshot: RepositorySnapshot) -> dict:
 
 
 def build_dashboard_top_failures(snapshot: RepositorySnapshot, inspection_type: str | None = None) -> dict:
-    selected_type = inspection_type or (snapshot.findings[0]["inspection_type"] if snapshot.findings else "General")
-    findings = _filter_findings_by_type(snapshot.findings, selected_type)
+    all_findings = _display_findings(snapshot.findings)
+    selected_type = inspection_type or (all_findings[0]["inspection_type"] if all_findings else "General")
+    findings = _filter_findings_by_type(all_findings, selected_type)
     report_ids = {item["document_id"] for item in findings}
     reviewed_count = len(snapshot.documents) if selected_type in {"All types", "All inspection types"} else len(report_ids)
     drivers = _top_failure_driver_rows(findings, limit=6)
     return {
-        "inspectionTypes": sorted({item["inspection_type"] for item in snapshot.findings}),
+        "inspectionTypes": sorted({item["inspection_type"] for item in all_findings}),
         "selectedInspectionType": selected_type,
         "summary": [
             {"label": "Inspection Type", "value": selected_type},
@@ -637,7 +667,7 @@ def build_dashboard_upcoming_risk(snapshot: RepositorySnapshot) -> dict:
         }
 
     first = upcoming[0]
-    failures = _likely_failures(snapshot.findings, first["inspection_type"])
+    failures = _likely_failures(_display_findings(snapshot.findings), first["inspection_type"])
     return {
         "title": first["inspection_type"],
         "daysUntilInspection": first["daysAway"],
@@ -658,9 +688,10 @@ def build_dashboard_insights_preview(snapshot: RepositorySnapshot) -> dict:
 
 
 def build_legacy_insights_summary(snapshot: RepositorySnapshot) -> dict:
+    findings = _display_findings(snapshot.findings)
     grouped: dict[str, list[dict]] = defaultdict(list)
-    for finding in snapshot.findings:
-        grouped[finding["title"]].append(finding)
+    for finding in findings:
+        grouped[finding["display_title"]].append(finding)
 
     severity_rank = {"Low": 1, "Medium": 2, "High": 3, "Critical": 4}
     top_issues = []
@@ -677,7 +708,7 @@ def build_legacy_insights_summary(snapshot: RepositorySnapshot) -> dict:
     top_issues.sort(key=lambda item: (-item["occurrences"], item["title"]))
     return {
         "topIssues": top_issues[:5],
-        "totalIssues": len(snapshot.findings),
+        "totalIssues": len(findings),
     }
 
 
@@ -700,14 +731,20 @@ def _report_payload(document: dict, findings: list[dict]) -> dict:
         "issues": [
             {
                 "id": item["id"],
-                "title": item["title"],
-                "description": item["description"],
+                "title": item.get("display_title") or item["title"],
+                "description": item.get("plain_english_summary") or item["description"],
+                "rawTitle": item["title"],
                 "severity": item["severity"],
                 "status": item["status"],
-                "category": item["category"],
+                "category": item.get("display_category") or item["category"],
                 "trade": item["trade"],
+                "project": item.get("project_name"),
+                "site": item.get("site_name"),
                 "location": item.get("location"),
                 "unitLabel": item.get("unit_label"),
+                "requiredFix": item.get("required_fix"),
+                "evidenceRequired": item.get("evidence_required") or [],
+                "confidence": item.get("confidence"),
                 "recurrenceRisk": safe_int(item.get("recurrence_risk")),
                 "reinspections": safe_int(item.get("reinspections")),
             }
@@ -719,7 +756,7 @@ def _report_payload(document: dict, findings: list[dict]) -> dict:
 def _top_failure_driver_rows(findings: list[dict], limit: int) -> list[dict]:
     grouped: dict[str, list[dict]] = defaultdict(list)
     for item in findings:
-        grouped[item["title"]].append(item)
+        grouped[item.get("display_title") or item["title"]].append(item)
 
     total = max(len(findings), 1)
     rows = []
@@ -953,9 +990,10 @@ def _filter_findings_by_type(findings: list[dict], inspection_type: str) -> list
 def _overview_risks(snapshot: RepositorySnapshot) -> list[dict]:
     if not snapshot.documents:
         return []
+    findings = _display_findings(snapshot.findings)
     risks = []
     for item in _normalized_predictions(snapshot)[:3]:
-        failures = _likely_failures(snapshot.findings, item["inspection_type"])
+        failures = _likely_failures(findings, item["inspection_type"])
         risks.append(
             {
                 "title": item["inspection_type"],

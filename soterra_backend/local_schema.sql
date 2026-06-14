@@ -175,6 +175,20 @@ CREATE TABLE IF NOT EXISTS agent_chat_messages (
   FOREIGN KEY(user_id) REFERENCES users(id)
 );
 
+CREATE TABLE IF NOT EXISTS agent_memory_entries (
+  id TEXT PRIMARY KEY,
+  tenant_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  session_id TEXT,
+  memory_type TEXT NOT NULL CHECK (memory_type IN ('tool', 'summary')),
+  content TEXT NOT NULL,
+  payload_json TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(tenant_id) REFERENCES tenants(id),
+  FOREIGN KEY(user_id) REFERENCES users(id),
+  FOREIGN KEY(session_id) REFERENCES agent_chat_sessions(id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_documents_project_date
   ON documents(tenant_id, project_id, report_date DESC);
 
@@ -222,6 +236,9 @@ CREATE INDEX IF NOT EXISTS idx_agent_sessions_tenant_user_updated
 
 CREATE INDEX IF NOT EXISTS idx_agent_messages_session_created
   ON agent_chat_messages(tenant_id, session_id, created_at ASC);
+
+CREATE INDEX IF NOT EXISTS idx_agent_memory_tenant_user_created
+  ON agent_memory_entries(tenant_id, user_id, created_at DESC);
 
 CREATE VIEW IF NOT EXISTS analytics_report_summary_v AS
 SELECT

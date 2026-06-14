@@ -10,7 +10,7 @@ from typing import Any
 from .prompts import SOTERRA_AGENT_SYSTEM_PROMPT
 from .schemas import AgentChatResponse, AgentRelatedEntities
 from .tools import build_soterra_tools
-from ..config import DEFAULT_MODEL_ID, DEFAULT_MODEL_PROVIDER, DEFAULT_REMOTE_MODEL_ID
+from ..config import DEFAULT_AGENT_PROVIDER, DEFAULT_MODEL_ID
 from ..repository import RepositoryBackend
 from ..services.work_package_service import build_chat_cards, build_todays_fix_list, build_work_packages
 from ..utils import safe_int
@@ -65,21 +65,21 @@ INTENT_TOOL_MAP = {
 class SoterraAgentService:
     def __init__(self, repository: RepositoryBackend) -> None:
         self.repository = repository
+        self._native_service = None
 
     def status(self) -> dict:
-        enabled = os.getenv("SOTERRA_AGENT_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+        enabled = os.getenv("SOTERRA_AGENT_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
         provider = os.getenv("SOTERRA_AGENT_PROVIDER", _default_agent_provider()).strip().lower()
         model_id = self._default_model_id(provider)
-        configured = False
+        configured = provider == "native"
         if provider in {"huggingface", "hf_inference", "huggingface_inference"}:
             configured = bool(os.getenv("HF_TOKEN"))
-        elif provider in {"local_transformers", "transformers_local", "local-hf", "local_hf"}:
-            configured = bool(model_id)
         return {
             "enabled": enabled,
             "configured": configured,
             "provider": provider,
             "model_id": model_id,
+            "mode": "deterministic" if provider == "native" else "model",
         }
 
     def chat(
@@ -96,6 +96,18 @@ class SoterraAgentService:
         page_context: str | None = None,
     ) -> AgentChatResponse:
         self._ensure_enabled()
+        if self._provider() == "native":
+            return self._native().chat(
+                message=message,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                role=role,
+                session_id=session_id,
+                report_id=report_id,
+                issue_id=issue_id,
+                project_slug=project_slug,
+                page_context=page_context,
+            )
         used_tools: list[str] = []
 
         def record_tool(name: str) -> None:
@@ -199,12 +211,16 @@ class SoterraAgentService:
         )
 
     def list_sessions(self, *, tenant_id: str, user_id: str) -> list[dict]:
+        if self._provider() == "native":
+            return self._native().list_sessions(tenant_id=tenant_id, user_id=user_id)
         return [
             {"id": item.id, "title": item.title, "created_at": item.created_at, "updated_at": item.updated_at}
             for item in self.repository.list_agent_chat_sessions(tenant_id=tenant_id, user_id=user_id)
         ]
 
     def get_session(self, *, tenant_id: str, user_id: str, session_id: str) -> dict | None:
+        if self._provider() == "native":
+            return self._native().get_session(tenant_id=tenant_id, user_id=user_id, session_id=session_id)
         session = self.repository.get_agent_chat_session(tenant_id=tenant_id, user_id=user_id, session_id=session_id)
         if not session:
             return None
@@ -221,12 +237,24 @@ class SoterraAgentService:
         }
 
     def delete_session(self, *, tenant_id: str, user_id: str, session_id: str) -> bool:
+        if self._provider() == "native":
+            return self._native().delete_session(tenant_id=tenant_id, user_id=user_id, session_id=session_id)
         return self.repository.soft_delete_agent_chat_session(tenant_id=tenant_id, user_id=user_id, session_id=session_id)
 
     def _ensure_enabled(self) -> None:
-        enabled = os.getenv("SOTERRA_AGENT_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+        enabled = os.getenv("SOTERRA_AGENT_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
         if not enabled:
             raise AgentDisabledError("Soterra agent chat is disabled.")
+
+    def _provider(self) -> str:
+        return os.getenv("SOTERRA_AGENT_PROVIDER", _default_agent_provider()).strip().lower()
+
+    def _native(self):
+        if self._native_service is None:
+            from ..services.native_agent_service import NativeAgentService
+
+            self._native_service = NativeAgentService(self.repository)
+        return self._native_service
 
     def _get_or_create_session(self, *, tenant_id: str, user_id: str, session_id: str | None, message: str):
         if session_id:
@@ -316,36 +344,15 @@ class SoterraAgentService:
                 temperature=temperature,
             )
 
-        if provider in {"local_transformers", "transformers_local", "local-hf", "local_hf"}:
-            from .direct_transformers import DirectTransformersChatModel
-            try:
-                max_tokens = int(os.getenv("SOTERRA_AGENT_MAX_TOKENS", os.getenv("SOTERRA_LOCAL_MODEL_MAX_NEW_TOKENS", "1200")))
-            except ValueError:
-                max_tokens = 1200
-            return DirectTransformersChatModel(
-                model_id=model_id,
-                device_map=os.getenv("SOTERRA_LOCAL_MODEL_DEVICE_MAP", "auto"),
-                torch_dtype=os.getenv("SOTERRA_LOCAL_MODEL_TORCH_DTYPE") or None,
-                trust_remote_code=os.getenv("SOTERRA_LOCAL_MODEL_TRUST_REMOTE_CODE", "true").strip().lower()
-                in {"1", "true", "yes", "on"},
-                max_new_tokens=max_tokens,
-                temperature=temperature,
-            )
-
-        raise AgentConfigurationError("Unsupported Soterra agent model provider.")
+        raise AgentConfigurationError("Unsupported Soterra agent model provider. Use SOTERRA_AGENT_PROVIDER=native or huggingface.")
 
     def _default_model_id(self, provider: str) -> str:
         configured = os.getenv("SOTERRA_AGENT_MODEL_ID")
         if configured:
             return configured
+        if provider == "native":
+            return None  # type: ignore[return-value]
         if provider in {"huggingface", "hf_inference", "huggingface_inference"}:
-            return DEFAULT_REMOTE_MODEL_ID if os.getenv("VERCEL") else DEFAULT_MODEL_ID
-        if provider in {
-            "local_transformers",
-            "transformers_local",
-            "local-hf",
-            "local_hf",
-        }:
             return DEFAULT_MODEL_ID
         return DEFAULT_MODEL_ID
 
@@ -1139,7 +1146,7 @@ def _cell(value: Any) -> str:
 
 
 def _default_agent_provider() -> str:
-    return "huggingface" if os.getenv("VERCEL") else DEFAULT_MODEL_PROVIDER
+    return DEFAULT_AGENT_PROVIDER
 
 
 def _used_tool_entries(used_tools: list[str]) -> list[dict]:

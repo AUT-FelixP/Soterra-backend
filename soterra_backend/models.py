@@ -115,6 +115,17 @@ class AgentChatMessage(StrictSchemaModel):
     created_at: str
 
 
+class AgentMemoryEntry(StrictSchemaModel):
+    id: str
+    tenant_id: str
+    user_id: str
+    session_id: str | None = None
+    memory_type: Literal["tool", "summary"]
+    content: str
+    payload_json: str | None = None
+    created_at: str
+
+
 class IngestionOutcome(StrictSchemaModel):
     item: dict
     is_duplicate: bool = False

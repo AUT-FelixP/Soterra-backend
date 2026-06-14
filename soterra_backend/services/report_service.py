@@ -12,6 +12,7 @@ from fastapi import BackgroundTasks, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
 from ..config import Settings
+from ..extraction_quality_gate import validate_extraction_quality
 from ..extractors import build_extractor
 from ..extractors.base import ExtractionRequest
 from ..models import ExtractionResult, IngestionOutcome
@@ -144,8 +145,14 @@ class ReportIngestionService:
                 len(raw_text),
             )
             normalized = extraction.model_copy(
-                update={"overall_outcome": summarize_status([item.severity for item in extraction.findings])}
+                update={
+                    "project_name": upload.project_name,
+                    "site_name": upload.site_name,
+                    "address": upload.address or extraction.address,
+                    "overall_outcome": summarize_status([item.severity for item in extraction.findings]),
+                }
             )
+            quality_diagnostics = validate_extraction_quality(normalized, raw_text)
             self.repository.complete_document(
                 tenant_id=upload.tenant_id,
                 document_id=start.document_id,
@@ -158,6 +165,7 @@ class ReportIngestionService:
                 raw_payload={
                     **normalized.model_dump(),
                     "extraction_metadata": extraction_metadata,
+                    "quality_gate": quality_diagnostics,
                 },
             )
             logger.info(

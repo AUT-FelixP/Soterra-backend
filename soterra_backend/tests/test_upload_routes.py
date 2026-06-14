@@ -229,7 +229,7 @@ class UploadAndRoutesTest(unittest.IsolatedAsyncioTestCase):
         from soterra_backend.config import Settings
         from soterra_backend.extractors import build_extractor
 
-        settings = replace(Settings.from_env(), extractor_mode="openai", allow_model_extraction=False)
+        settings = replace(Settings.from_env(), extractor_mode="model", allow_model_extraction=False)
         with self.assertRaises(RuntimeError):
             _ = build_extractor(settings)
 

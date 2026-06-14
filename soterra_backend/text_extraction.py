@@ -63,7 +63,7 @@ def extract_text_with_easyocr(pdf_path: Path, max_pages: int = 12) -> str:
         import easyocr
     except ModuleNotFoundError as exc:
         raise RuntimeError(
-            "easyocr is not installed. Install the demo extras or use SOTERRA_EXTRACTOR_MODE=model."
+            "easyocr is not installed. Install the demo extras or use SOTERRA_EXTRACTOR_MODE=package."
         ) from exc
 
     reader = easyocr.Reader(["en"], gpu=False)

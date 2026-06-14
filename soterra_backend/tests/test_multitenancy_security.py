@@ -13,7 +13,11 @@ from soterra_backend.storage import LocalFileStorage
 
 def _pdf_bytes() -> bytes:
     document = fitz.open()
-    document.new_page().insert_text((72, 72), "Tenant isolation test report")
+    document.new_page().insert_text(
+        (72, 72),
+        "Tenant isolation test report with readable inspection context, project attendance notes, site weather, "
+        "and neutral observations for storage and access-control verification.",
+    )
     payload = document.tobytes()
     document.close()
     return payload

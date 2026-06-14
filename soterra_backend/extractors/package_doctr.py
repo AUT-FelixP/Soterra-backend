@@ -16,27 +16,34 @@ from .base import ExtractionArtifacts, ExtractionRequest
 
 _DOCTR_PREDICTOR = None
 
-ISSUE_PATTERNS = (
-    "fail",
+ISSUE_HINTS = (
     "failed",
-    "missing",
-    "incomplete",
-    "incorrect",
+    "fail",
     "non-compliant",
     "not compliant",
-    "not installed",
-    "not acceptable",
-    "outstanding",
-    "pending",
-    "loose",
-    "clash",
-    "clashes",
-    "compressed",
-    "crushed",
-    "squeezed",
-    "requires",
+    "missing",
+    "incomplete",
     "required",
+    "requires",
+    "outstanding",
+    "not installed",
+    "defect",
+    "recheck",
+    "close-out",
+    "rectify",
+    "penetration",
+    "flashing",
+    "membrane",
+    "damper",
+    "plasterboard",
+    "fire stop",
+    "collar",
+    "duct",
+    "pipe",
+    "gap",
+    "fixing",
 )
+ISSUE_PATTERNS = ISSUE_HINTS + ("incorrect", "not acceptable", "pending", "loose", "clash", "clashes", "compressed", "crushed", "squeezed")
 
 NOISE_PATTERNS = (
     "inspection details",
@@ -128,13 +135,13 @@ def _render_pdf_pages(pdf_path: Path, target_dir: Path, *, max_pages: int = 12) 
 
 def _build_rule_extraction(request: ExtractionRequest, raw_text: str) -> ExtractionResult:
     normalized = _normalize_text(raw_text)
-    project_name = _extract_project_name(normalized) or request.project_name
+    project_name = request.project_name or _extract_project_name(normalized)
     report_date = _extract_report_date(normalized)
     inspection_type = _extract_inspection_type(normalized, request.filename)
     trade = _extract_trade(normalized, inspection_type, request.trade)
     inspector = _extract_inspector(normalized, inspection_type)
-    address = _extract_address(normalized) or request.address
-    site_name = _extract_site_name(normalized, address, request.site_name, inspection_type)
+    address = request.address or _extract_address(normalized)
+    site_name = request.site_name or _extract_site_name(normalized, address, request.site_name, inspection_type)
     units = _extract_units(normalized)
     findings = _extract_findings(normalized, trade)
     predicted_inspections = _build_predicted_inspections(report_date, inspection_type, site_name, findings)
@@ -282,18 +289,8 @@ def _extract_findings(text: str, default_trade: str) -> list[ExtractedFinding]:
     findings: list[ExtractedFinding] = []
     seen: set[str] = set()
 
-    for raw_line in text.splitlines():
-        line = raw_line.strip(" -*\t")
-        if len(line) < 10:
-            continue
-
-        lowered = line.lower()
-        if any(noise in lowered for noise in NOISE_PATTERNS):
-            continue
-        if not any(token in lowered for token in ISSUE_PATTERNS):
-            continue
-
-        title = _build_finding_title(line)
+    for block in extract_issue_blocks(text):
+        title = _build_finding_title(block)
         key = title.lower()
         if key in seen:
             continue
@@ -302,17 +299,91 @@ def _extract_findings(text: str, default_trade: str) -> list[ExtractedFinding]:
         findings.append(
             ExtractedFinding(
                 title=title,
-                description=line,
-                severity=_classify_severity(line),  # type: ignore[arg-type]
-                category=_classify_category(line),
-                trade=_classify_trade(line, default_trade),
-                location=_classify_location(line),
-                unit_label=_classify_unit(line),
-                recurrence_risk=_score_recurrence(line),
+                description=block,
+                severity=_classify_severity(block),  # type: ignore[arg-type]
+                category=_classify_category(block),
+                trade=_classify_trade(block, default_trade),
+                location=_classify_location(block),
+                unit_label=_classify_unit(block),
+                recurrence_risk=_score_recurrence(block),
+                source_quote=block[:500],
+                confidence=_classify_confidence(block),
             )
         )
 
-    return findings[:20]
+    return findings[:40]
+
+
+def extract_issue_blocks(text: str) -> list[str]:
+    """Group issue-like lines with their nearby continuation lines."""
+    blocks: list[str] = []
+    current: list[str] = []
+
+    for raw_line in text.splitlines():
+        starts_new_row = bool(re.match(r"^\s*(?:\d+[).:-]|[-*•])\s+", raw_line))
+        line = _clean_issue_line(raw_line)
+        if not line:
+            if current:
+                blocks.append(" ".join(current))
+                current = []
+            continue
+
+        lowered = line.lower()
+        if any(noise in lowered for noise in NOISE_PATTERNS):
+            if current:
+                blocks.append(" ".join(current))
+                current = []
+            continue
+
+        issue_like = any(token in lowered for token in ISSUE_PATTERNS)
+        continuation = bool(current) and (_looks_like_continuation(line) or not _looks_like_heading(line))
+        if issue_like and continuation and not starts_new_row:
+            current.append(line)
+        elif issue_like:
+            if current:
+                blocks.append(" ".join(current))
+            current = [line]
+        elif continuation:
+            current.append(line)
+        elif current:
+            blocks.append(" ".join(current))
+            current = []
+
+    if current:
+        blocks.append(" ".join(current))
+
+    unique: list[str] = []
+    seen: set[str] = set()
+    for block in blocks:
+        cleaned = re.sub(r"\s+", " ", block).strip(" -;")
+        if len(cleaned) < 10:
+            continue
+        key = re.sub(r"[^a-z0-9]+", " ", cleaned.lower()).strip()
+        if key and key not in seen:
+            seen.add(key)
+            unique.append(cleaned)
+    return unique[:40]
+
+
+def _clean_issue_line(line: str) -> str:
+    cleaned = re.sub(r"^[\s*\-•]+", "", line.strip())
+    cleaned = re.sub(r"^\d+[).:-]?\s*", "", cleaned)
+    return cleaned.strip()
+
+
+def _looks_like_heading(line: str) -> bool:
+    stripped = line.strip()
+    if len(stripped) <= 40 and stripped.endswith(":"):
+        return True
+    letters = re.sub(r"[^A-Za-z]+", "", stripped)
+    return bool(letters) and len(stripped) <= 60 and letters.upper() == letters
+
+
+def _looks_like_continuation(line: str) -> bool:
+    lowered = line.lower()
+    return line.startswith(("and ", "with ", "at ", "to ", "for ")) or any(
+        token in lowered for token in ("photo", "evidence", "level", "unit", "apartment", "riser", "corridor", "before", "after", "location")
+    )
 
 
 def _build_finding_title(line: str) -> str:
@@ -368,6 +439,12 @@ def _classify_trade(line: str, default_trade: str) -> str:
 
 def _classify_location(line: str) -> str | None:
     lowered = line.lower()
+    level_match = re.search(r"\blevel\s*\d+\b", lowered)
+    if level_match:
+        return level_match.group(0).title()
+    area_match = re.search(r"\b(?:riser|corridor|stair|shaft|lobby|bathroom|balcony|plant room)\b", lowered)
+    if area_match:
+        return area_match.group(0).title()
     if "level 3" in lowered:
         return "Level 3"
     if "level 2" in lowered:
@@ -392,6 +469,20 @@ def _score_recurrence(line: str) -> int:
     if any(token in lowered for token in ("critical", "non-compliant", "fire")):
         score += 20
     return min(score, 95)
+
+
+def _classify_confidence(line: str) -> float:
+    lowered = line.lower()
+    score = 0.55
+    if any(token in lowered for token in ISSUE_HINTS):
+        score += 0.2
+    if _classify_location(line) or _classify_unit(line):
+        score += 0.1
+    if any(token in lowered for token in ("photo", "evidence", "close-out", "required", "rectify")):
+        score += 0.1
+    if len(line) > 160:
+        score += 0.05
+    return min(score, 0.92)
 
 
 def _build_predicted_inspections(

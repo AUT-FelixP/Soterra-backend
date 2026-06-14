@@ -5,12 +5,12 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 
-DEFAULT_MODEL_PROVIDER = "local_transformers"
-DEFAULT_REMOTE_MODEL_PROVIDER = "huggingface"
+DEFAULT_MODEL_PROVIDER = "huggingface"
 DEFAULT_MODEL_ID = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
-DEFAULT_REMOTE_MODEL_ID = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
-DEFAULT_PARSE_MODEL_PROVIDER = "local_transformers"
-DEFAULT_PARSE_MODEL_ID = "nvidia/NVIDIA-Nemotron-Parse-v1.2"
+DEFAULT_PARSE_MODEL_PROVIDER = "package"
+DEFAULT_PARSE_MODEL_ID = "HuggingFaceTB/SmolVLM-256M-Instruct"
+DEFAULT_AGENT_PROVIDER = "native"
+DEFAULT_INSIGHTS_PROVIDER = "native"
 
 
 def _to_bool(value: str | None, default: bool) -> bool:
@@ -57,11 +57,15 @@ def _default_process_inline() -> bool:
 
 
 def _default_model_provider() -> str:
-    return DEFAULT_REMOTE_MODEL_PROVIDER if os.getenv("VERCEL") else DEFAULT_MODEL_PROVIDER
+    return DEFAULT_MODEL_PROVIDER
 
 
 def _default_parse_provider() -> str:
-    return "openai_compatible" if os.getenv("VERCEL") else DEFAULT_PARSE_MODEL_PROVIDER
+    return DEFAULT_PARSE_MODEL_PROVIDER
+
+
+def _default_agent_provider() -> str:
+    return DEFAULT_AGENT_PROVIDER
 
 
 @dataclass(frozen=True)
@@ -91,6 +95,7 @@ class Settings:
     document_parse_text_in_pictures: bool
     soterra_agent_provider: str
     soterra_agent_model_id: str
+    soterra_insights_provider: str
     model_extraction_temperature: float
     model_extraction_max_findings: int
     model_extraction_timeout_seconds: int
@@ -142,14 +147,14 @@ class Settings:
         ).strip()
         extractor_mode = os.getenv(
             "SOTERRA_EXTRACTOR_MODE",
-            "model",
+            "package",
         ).strip()
         extraction_provider = os.getenv("SOTERRA_EXTRACTION_PROVIDER", _default_model_provider()).strip()
-        default_model_id = DEFAULT_REMOTE_MODEL_ID if os.getenv("VERCEL") else DEFAULT_MODEL_ID
+        default_model_id = DEFAULT_MODEL_ID
         extraction_model_id = os.getenv("SOTERRA_EXTRACTION_MODEL_ID", default_model_id).strip()
         document_parse_provider = os.getenv("SOTERRA_DOCUMENT_PARSE_PROVIDER", _default_parse_provider()).strip()
         document_parse_model_id = os.getenv("SOTERRA_DOCUMENT_PARSE_MODEL_ID", DEFAULT_PARSE_MODEL_ID).strip()
-        agent_provider = os.getenv("SOTERRA_AGENT_PROVIDER", _default_model_provider()).strip()
+        agent_provider = os.getenv("SOTERRA_AGENT_PROVIDER", _default_agent_provider()).strip()
         agent_model_id = os.getenv(
             "SOTERRA_AGENT_MODEL_ID",
             default_model_id,
@@ -168,16 +173,17 @@ class Settings:
             extractor_mode=extractor_mode,
             package_extractor=os.getenv("SOTERRA_PACKAGE_EXTRACTOR", "doctr_rules_presidio").strip(),
             model_extractor=extraction_provider,
-            allow_model_extraction=_to_bool(os.getenv("SOTERRA_ALLOW_MODEL_EXTRACTION"), True),
+            allow_model_extraction=_to_bool(os.getenv("SOTERRA_ALLOW_MODEL_EXTRACTION"), False),
             soterra_extraction_provider=extraction_provider,
             soterra_extraction_model_id=extraction_model_id,
             soterra_document_parse_provider=document_parse_provider,
             soterra_document_parse_model_id=document_parse_model_id,
             document_parse_max_pages=int(os.getenv("SOTERRA_DOCUMENT_PARSE_MAX_PAGES", "12")),
-            document_parse_max_new_tokens=int(os.getenv("SOTERRA_DOCUMENT_PARSE_MAX_NEW_TOKENS", "9000")),
+            document_parse_max_new_tokens=int(os.getenv("SOTERRA_DOCUMENT_PARSE_MAX_NEW_TOKENS", "2048")),
             document_parse_text_in_pictures=_to_bool(os.getenv("SOTERRA_DOCUMENT_PARSE_TEXT_IN_PICTURES"), False),
             soterra_agent_provider=agent_provider,
             soterra_agent_model_id=agent_model_id,
+            soterra_insights_provider=os.getenv("SOTERRA_INSIGHTS_PROVIDER", DEFAULT_INSIGHTS_PROVIDER).strip(),
             model_extraction_temperature=float(os.getenv("SOTERRA_MODEL_EXTRACTION_TEMPERATURE", "0.0")),
             model_extraction_max_findings=int(os.getenv("SOTERRA_MODEL_EXTRACTION_MAX_FINDINGS", "40")),
             model_extraction_timeout_seconds=int(os.getenv("SOTERRA_MODEL_EXTRACTION_TIMEOUT_SECONDS", "90")),

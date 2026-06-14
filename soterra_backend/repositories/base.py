@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from ..models import AgentChatMessage, AgentChatSession, AuthSession, ExtractionResult, RepositorySnapshot, StoredFile
+from ..models import AgentChatMessage, AgentChatSession, AgentMemoryEntry, AuthSession, ExtractionResult, RepositorySnapshot, StoredFile
 
 
 class RepositoryBackend(Protocol):
@@ -143,4 +143,26 @@ class RepositoryBackend(Protocol):
         tool_name: str | None = None,
         tool_payload_json: str | None = None,
     ) -> AgentChatMessage:
+        ...
+
+    def add_agent_memory_entry(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        session_id: str | None,
+        memory_type: str,
+        content: str,
+        payload_json: str | None = None,
+    ) -> AgentMemoryEntry:
+        ...
+
+    def list_agent_memory_entries(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        session_id: str | None = None,
+        limit: int = 20,
+    ) -> list[AgentMemoryEntry]:
         ...

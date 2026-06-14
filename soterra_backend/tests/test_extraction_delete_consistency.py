@@ -21,7 +21,11 @@ def _blank_pdf_bytes() -> bytes:
 
     document = fitz.open()
     page = document.new_page()
-    page.insert_text((72, 72), "Inspection upload smoke test")
+    page.insert_text(
+        (72, 72),
+        "Inspection upload smoke test. The consultant recorded general site observations, attendance notes, "
+        "weather conditions, and confirmation that this sample report has enough readable text for storage.",
+    )
     return document.tobytes()
 
 

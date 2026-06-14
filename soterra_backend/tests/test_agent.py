@@ -5,7 +5,8 @@ from unittest.mock import patch
 
 from soterra_backend.agent.service import AgentIntent, SoterraAgentService, classify_intent, is_vague_answer
 from soterra_backend.agent.tools import build_soterra_tools
-from soterra_backend.models import AgentChatMessage, AgentChatSession, RepositorySnapshot
+from soterra_backend.models import AgentChatMessage, AgentChatSession, AgentMemoryEntry, RepositorySnapshot
+from soterra_backend.services.native_agent_service import NativeAgentService
 
 
 class FakeRepository:
@@ -194,6 +195,7 @@ class FakeRepository:
         )
         self.sessions: dict[str, AgentChatSession] = {}
         self.messages: list[AgentChatMessage] = []
+        self.memory: list[AgentMemoryEntry] = []
 
     def load_snapshot(self, tenant_id: str) -> RepositorySnapshot:
         self.last_tenant_id = tenant_id
@@ -274,6 +276,42 @@ class FakeRepository:
         )
         self.messages.append(message)
         return message
+
+    def add_agent_memory_entry(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        session_id: str | None,
+        memory_type: str,
+        content: str,
+        payload_json: str | None = None,
+    ) -> AgentMemoryEntry:
+        entry = AgentMemoryEntry(
+            id=f"mem-{len(self.memory) + 1}",
+            tenant_id=tenant_id,
+            user_id=user_id,
+            session_id=session_id,
+            memory_type=memory_type,  # type: ignore[arg-type]
+            content=content,
+            payload_json=payload_json,
+            created_at=f"2026-01-01T00:01:{len(self.memory) + 1:02d}+00:00",
+        )
+        self.memory.append(entry)
+        return entry
+
+    def list_agent_memory_entries(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        session_id: str | None = None,
+        limit: int = 20,
+    ) -> list[AgentMemoryEntry]:
+        rows = [item for item in self.memory if item.tenant_id == tenant_id and item.user_id == user_id]
+        if session_id:
+            rows = [item for item in rows if item.session_id == session_id]
+        return rows[-limit:]
 
 
 class KauriGoldenRepository(FakeRepository):
@@ -766,19 +804,48 @@ class AgentToolCoverageTest(unittest.TestCase):
         )
         self.assertIn("No matching active reports are available for your current account", answer)
 
-    def test_agent_status_supports_local_transformers_provider(self) -> None:
+    def test_agent_status_rejects_unsupported_provider(self) -> None:
         service = SoterraAgentService(FakeRepository())
         with patch.dict(
             "os.environ",
             {
                 "SOTERRA_AGENT_ENABLED": "true",
-                "SOTERRA_AGENT_PROVIDER": "local_transformers",
+                "SOTERRA_AGENT_PROVIDER": "unsupported_provider",
                 "SOTERRA_AGENT_MODEL_ID": "HuggingFaceTB/SmolLM2-1.7B-Instruct",
             },
         ):
             status = service.status()
-        self.assertTrue(status["configured"])
-        self.assertEqual(status["provider"], "local_transformers")
+        self.assertFalse(status["configured"])
+        self.assertEqual(status["provider"], "unsupported_provider")
+
+    def test_native_agent_summary_returns_open_issue_count_and_memory(self) -> None:
+        repo = FakeRepository()
+        service = NativeAgentService(repo)
+
+        response = service.chat(tenant_id="ten-1", user_id="usr-1", message="Summarize this project")
+
+        self.assertIn("2 open issue", response.answer)
+        self.assertEqual(response.used_tools[0]["name"], "summarize_project")
+        self.assertTrue(repo.memory)
+        self.assertEqual(getattr(repo, "last_tenant_id", None), "ten-1")
+
+    def test_native_agent_evidence_needed_returns_evidence_required(self) -> None:
+        repo = FakeRepository()
+        repo.snapshot.findings[0]["evidence_required"] = ["Labelled after photo", "Trade sign-off"]
+        service = NativeAgentService(repo)
+
+        response = service.chat(tenant_id="ten-1", user_id="usr-1", message="What evidence is needed?")
+
+        self.assertIn("Labelled after photo", response.answer)
+        self.assertEqual(response.mode, "evidence_mode")
+
+    def test_native_agent_repeated_patterns_returns_recurring_findings(self) -> None:
+        service = NativeAgentService(FakeRepository())
+
+        response = service.chat(tenant_id="ten-1", user_id="usr-1", message="What repeated patterns are causing reinspection?")
+
+        self.assertIn("Fire collar missing", response.answer)
+        self.assertEqual(response.mode, "risk_mode")
 
     def test_agent_status_supports_huggingface_provider(self) -> None:
         service = SoterraAgentService(FakeRepository())
@@ -810,8 +877,8 @@ class AgentToolCoverageTest(unittest.TestCase):
         ):
             status = service.status()
         self.assertTrue(status["configured"])
-        self.assertEqual(status["provider"], "huggingface")
-        self.assertEqual(status["model_id"], "HuggingFaceTB/SmolLM2-1.7B-Instruct")
+        self.assertEqual(status["provider"], "native")
+        self.assertIsNone(status["model_id"] if status["provider"] == "native" else None)
 
 
 if __name__ == "__main__":

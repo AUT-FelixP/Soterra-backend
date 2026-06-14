@@ -18,6 +18,9 @@ from .security import bearer_token, set_auth_headers
 
 PUBLIC_PATHS = {
     "/health",
+    "/health/extraction",
+    "/health/agent",
+    "/health/insights",
     "/auth/login",
     "/auth/register",
     "/auth/forgot-password",

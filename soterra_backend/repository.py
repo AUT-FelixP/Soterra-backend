@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Protocol
 
 from .config import Settings
-from .models import AgentChatMessage, AgentChatSession, AuthSession, ExtractionResult, RepositorySnapshot, StoredFile, TenantUser
+from .models import AgentChatMessage, AgentChatSession, AgentMemoryEntry, AuthSession, ExtractionResult, RepositorySnapshot, StoredFile, TenantUser
 from .utils import create_id, utc_now_iso
 
 _DEFAULT_TENANT_ID = "ten-default"
@@ -158,6 +158,28 @@ class RepositoryBackend(Protocol):
         tool_name: str | None = None,
         tool_payload_json: str | None = None,
     ) -> AgentChatMessage:
+        ...
+
+    def add_agent_memory_entry(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        session_id: str | None,
+        memory_type: str,
+        content: str,
+        payload_json: str | None = None,
+    ) -> AgentMemoryEntry:
+        ...
+
+    def list_agent_memory_entries(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        session_id: str | None = None,
+        limit: int = 20,
+    ) -> list[AgentMemoryEntry]:
         ...
 
 
@@ -966,6 +988,62 @@ class SqliteRepository:
             tool_payload_json=tool_payload_json,
             created_at=timestamp,
         )
+
+    def add_agent_memory_entry(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        session_id: str | None,
+        memory_type: str,
+        content: str,
+        payload_json: str | None = None,
+    ) -> AgentMemoryEntry:
+        timestamp = utc_now_iso()
+        memory_id = create_id("mem")
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO agent_memory_entries
+                  (id, tenant_id, user_id, session_id, memory_type, content, payload_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (memory_id, tenant_id, user_id, session_id, memory_type, content, payload_json, timestamp),
+            )
+        return AgentMemoryEntry(
+            id=memory_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            session_id=session_id,
+            memory_type=memory_type,  # type: ignore[arg-type]
+            content=content,
+            payload_json=payload_json,
+            created_at=timestamp,
+        )
+
+    def list_agent_memory_entries(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        session_id: str | None = None,
+        limit: int = 20,
+    ) -> list[AgentMemoryEntry]:
+        capped = min(max(int(limit or 20), 1), 100)
+        sql = """
+            SELECT *
+            FROM agent_memory_entries
+            WHERE tenant_id = ? AND user_id = ?
+        """
+        params: list[object] = [tenant_id, user_id]
+        if session_id:
+            sql += " AND session_id = ?"
+            params.append(session_id)
+        sql += " ORDER BY created_at DESC LIMIT ?"
+        params.append(capped)
+        with self._connect() as connection:
+            rows = connection.execute(sql, params).fetchall()
+        return [AgentMemoryEntry(**_dict(row)) for row in rows]
 
     @contextmanager
     def _connect(self) -> sqlite3.Connection:
@@ -2040,6 +2118,65 @@ class SupabaseRepository:
         self.client.table("agent_chat_messages").insert(payload).execute()
         self.client.table("agent_chat_sessions").update({"updated_at": timestamp}).eq("tenant_id", tenant_id).eq("user_id", user_id).eq("id", session_id).execute()
         return AgentChatMessage(**_normalize_agent_message_row(payload))
+
+    def add_agent_memory_entry(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        session_id: str | None,
+        memory_type: str,
+        content: str,
+        payload_json: str | None = None,
+    ) -> AgentMemoryEntry:
+        timestamp = utc_now_iso()
+        payload = {
+            "id": create_id("mem"),
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "session_id": session_id,
+            "memory_type": memory_type,
+            "content": content,
+            "payload_json": json.loads(payload_json) if payload_json else None,
+            "created_at": timestamp,
+        }
+        self.client.table("agent_memory_entries").insert(payload).execute()
+        return AgentMemoryEntry(
+            **{
+                **payload,
+                "payload_json": json.dumps(payload["payload_json"]) if payload["payload_json"] is not None else None,
+            }
+        )
+
+    def list_agent_memory_entries(
+        self,
+        *,
+        tenant_id: str,
+        user_id: str,
+        session_id: str | None = None,
+        limit: int = 20,
+    ) -> list[AgentMemoryEntry]:
+        capped = min(max(int(limit or 20), 1), 100)
+        query = (
+            self.client.table("agent_memory_entries")
+            .select("*")
+            .eq("tenant_id", tenant_id)
+            .eq("user_id", user_id)
+            .order("created_at", desc=True)
+            .limit(capped)
+        )
+        if session_id:
+            query = query.eq("session_id", session_id)
+        rows = query.execute().data
+        return [
+            AgentMemoryEntry(
+                **{
+                    **row,
+                    "payload_json": json.dumps(row.get("payload_json")) if row.get("payload_json") is not None and not isinstance(row.get("payload_json"), str) else row.get("payload_json"),
+                }
+            )
+            for row in rows
+        ]
 
 
 def build_repository(settings: Settings) -> RepositoryBackend:

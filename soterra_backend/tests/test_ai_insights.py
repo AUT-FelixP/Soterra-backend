@@ -175,8 +175,10 @@ class InsightsAgentServiceTest(unittest.TestCase):
 
         self.assertEqual(repo.loaded_tenant_ids, ["ten-a"])
         self.assertEqual(payload["dataScope"], "tenant")
+        self.assertEqual(payload["engine"], "native")
+        self.assertEqual(payload["generatedBy"], "deterministic_inspection_analytics")
         self.assertFalse(payload["aiAvailable"])
-        self.assertIn("unavailable", payload["fallbackMessage"])
+        self.assertIsNone(payload["fallbackMessage"])
         self.assertEqual(payload["filter"]["selected"], "All")
         for key in [
             "executiveSummary",
@@ -258,13 +260,13 @@ class InsightsAgentServiceTest(unittest.TestCase):
         self.assertNotIn("Rimu Townhouses", text)
 
     def test_fallback_works_when_agent_throws(self) -> None:
-        service = InsightsAgentService(repository=FakeInsightsRepository(), agent_service=ThrowingAgent())
+        service = InsightsAgentService(repository=FakeInsightsRepository(), agent_service=ThrowingAgent(), settings=type("Settings", (), {"soterra_insights_provider": "huggingface"})())
 
         payload = service.build_ai_insights(tenant_id="ten-a", inspection_type="All")
 
-        self.assertIn("deterministic analytics", payload["confidenceNote"])
+        self.assertIn("deterministic inspection analytics", payload["confidenceNote"])
         self.assertFalse(payload["aiAvailable"])
-        self.assertIn("unavailable", payload["fallbackMessage"])
+        self.assertIsNone(payload["fallbackMessage"])
         self.assertTrue(payload["preInspectionChecklist"])
 
     def test_repository_disconnect_returns_valid_response_instead_of_500(self) -> None:
@@ -281,7 +283,7 @@ class InsightsAgentServiceTest(unittest.TestCase):
 
     def test_ai_prompt_contains_only_compact_tenant_scoped_fields(self) -> None:
         agent = JsonAgent()
-        service = InsightsAgentService(repository=FakeInsightsRepository(), agent_service=agent)
+        service = InsightsAgentService(repository=FakeInsightsRepository(), agent_service=agent, settings=type("Settings", (), {"soterra_insights_provider": "huggingface"})())
 
         payload = service.build_ai_insights(tenant_id="ten-a", inspection_type="All")
 

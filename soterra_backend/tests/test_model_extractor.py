@@ -4,21 +4,21 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
-from soterra_backend.config import DEFAULT_MODEL_ID, DEFAULT_PARSE_MODEL_ID, DEFAULT_REMOTE_MODEL_ID, ModelExtractionConfig, Settings
+from soterra_backend.config import DEFAULT_MODEL_ID, DEFAULT_PARSE_MODEL_ID, ModelExtractionConfig, Settings
 from soterra_backend.extractors import build_extractor
 from soterra_backend.extractors.base import ExtractionArtifacts, ExtractionRequest
 from soterra_backend.extractors.demo import DemoExtractor
 from soterra_backend.extractors.model import ModelExtractor
 from soterra_backend.extractors.model.clients import (
     HuggingFaceInferenceExtractionClient,
-    LocalTransformersExtractionClient,
     build_model_extraction_client,
 )
 from soterra_backend.extractors.model.document_text import (
     DocumentTextResult,
-    NemotronParseDocumentTextExtractor,
+    HuggingFaceDocumentTextExtractor,
     PackageDocumentTextExtractor,
 )
 from soterra_backend.extractors.model.quality import score_extraction_quality
@@ -26,13 +26,14 @@ from soterra_backend.models import ExtractedFinding, ExtractionResult
 
 
 def _settings(*, mode: str = "model", configs: list[ModelExtractionConfig] | None = None) -> Settings:
-    model_configs = configs or [ModelExtractionConfig(provider="openai", model_id="test-model", name="primary")]
+    model_configs = configs or [ModelExtractionConfig(provider="huggingface", model_id="test-model", name="primary")]
     return replace(
         Settings.from_env(),
         extractor_mode=mode,
         allow_model_extraction=True,
         model_extraction_models=model_configs,
         model_extraction_max_findings=40,
+        soterra_document_parse_provider="huggingface",
     )
 
 
@@ -106,31 +107,34 @@ class FakeDocumentTextExtractor:
 
 
 class ModelExtractorTest(unittest.TestCase):
-    def test_default_model_configuration_uses_smollm_and_nemotron_parse(self) -> None:
+    def test_default_configuration_uses_package_and_native_without_hf_token(self) -> None:
         with patch("soterra_backend.config._load_env_file", return_value=None), patch.dict("os.environ", {}, clear=True):
             settings = Settings.from_env()
 
-        self.assertEqual(settings.extractor_mode, "model")
-        self.assertTrue(settings.allow_model_extraction)
-        self.assertEqual(settings.model_extraction_models[0].provider, "local_transformers")
+        self.assertEqual(settings.extractor_mode, "package")
+        self.assertFalse(settings.allow_model_extraction)
+        self.assertEqual(settings.model_extraction_models[0].provider, "huggingface")
         self.assertEqual(settings.model_extraction_models[0].model_id, DEFAULT_MODEL_ID)
+        self.assertEqual(settings.soterra_agent_provider, "native")
         self.assertEqual(settings.soterra_agent_model_id, DEFAULT_MODEL_ID)
+        self.assertEqual(settings.soterra_document_parse_provider, "package")
         self.assertEqual(settings.soterra_document_parse_model_id, DEFAULT_PARSE_MODEL_ID)
+        self.assertEqual(settings.soterra_insights_provider, "native")
 
-    def test_vercel_defaults_use_remote_smollm_and_remote_nemotron_parse_provider(self) -> None:
+    def test_vercel_defaults_still_use_package_and_native(self) -> None:
         with patch("soterra_backend.config._load_env_file", return_value=None), patch.dict("os.environ", {"VERCEL": "1"}, clear=True):
             settings = Settings.from_env()
 
         self.assertEqual(settings.model_extraction_models[0].provider, "huggingface")
-        self.assertEqual(settings.model_extraction_models[0].model_id, DEFAULT_REMOTE_MODEL_ID)
-        self.assertEqual(settings.soterra_agent_provider, "huggingface")
-        self.assertEqual(settings.soterra_agent_model_id, DEFAULT_REMOTE_MODEL_ID)
-        self.assertEqual(settings.soterra_document_parse_provider, "openai_compatible")
+        self.assertEqual(settings.model_extraction_models[0].model_id, DEFAULT_MODEL_ID)
+        self.assertEqual(settings.soterra_agent_provider, "native")
+        self.assertEqual(settings.soterra_agent_model_id, DEFAULT_MODEL_ID)
+        self.assertEqual(settings.soterra_document_parse_provider, "package")
         self.assertEqual(settings.soterra_document_parse_model_id, DEFAULT_PARSE_MODEL_ID)
 
-    def test_document_parse_uses_nemotron_parse_with_package_fallback(self) -> None:
+    def test_document_parse_uses_huggingface_vision_with_package_fallback(self) -> None:
         settings = _settings()
-        extractor = NemotronParseDocumentTextExtractor(
+        extractor = HuggingFaceDocumentTextExtractor(
             provider=settings.soterra_document_parse_provider,
             model_id=settings.soterra_document_parse_model_id,
             max_pages=settings.document_parse_max_pages,
@@ -140,7 +144,46 @@ class ModelExtractorTest(unittest.TestCase):
         )
 
         self.assertEqual(extractor.model_id, DEFAULT_PARSE_MODEL_ID)
-        self.assertEqual(extractor.provider, "local_transformers")
+        self.assertEqual(extractor.provider, "huggingface")
+
+    def test_huggingface_document_parse_sends_page_images_to_inference_client(self) -> None:
+        calls: list[dict] = []
+
+        class FakeCompletions:
+            def create(self, **kwargs):
+                calls.append(kwargs)
+                message = SimpleNamespace(content="Inspection result: failed fire stopping.")
+                return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+        class FakeInferenceClient:
+            def __init__(self, **kwargs) -> None:
+                self.chat = SimpleNamespace(completions=FakeCompletions())
+
+        with tempfile.TemporaryDirectory() as tmp_dir_name:
+            tmp_dir = Path(tmp_dir_name)
+            pdf_path = tmp_dir / "report.pdf"
+            image_path = tmp_dir / "page-1.png"
+            pdf_path.write_bytes(b"%PDF")
+            image_path.write_bytes(b"image-bytes")
+
+            extractor = HuggingFaceDocumentTextExtractor(
+                provider="huggingface",
+                model_id=DEFAULT_PARSE_MODEL_ID,
+                max_pages=1,
+                max_new_tokens=128,
+                text_in_pictures=False,
+                fallback=PackageDocumentTextExtractor(max_pages=1),
+            )
+            with patch.dict("os.environ", {"HF_TOKEN": "test-token"}), patch(
+                "soterra_backend.extractors.model.document_text.render_page_image_paths",
+                return_value=[image_path],
+            ), patch("huggingface_hub.InferenceClient", FakeInferenceClient):
+                result = extractor.extract_text(pdf_path)
+
+        self.assertEqual(result.source, "huggingface-vision")
+        self.assertIn("failed fire stopping", result.text)
+        self.assertEqual(calls[0]["model"], DEFAULT_PARSE_MODEL_ID)
+        self.assertEqual(calls[0]["messages"][0]["content"][0]["type"], "image_url")
 
     def test_build_extractor_returns_model_extractor_when_mode_is_model(self) -> None:
         extractor = build_extractor(_settings())
@@ -151,20 +194,20 @@ class ModelExtractorTest(unittest.TestCase):
         client = build_model_extraction_client(settings, settings.model_extraction_models[0])
         self.assertIsInstance(client, HuggingFaceInferenceExtractionClient)
 
-    def test_local_transformers_provider_builds_lazy_local_client(self) -> None:
-        settings = _settings(configs=[ModelExtractionConfig(provider="local_transformers", model_id=DEFAULT_MODEL_ID)])
-        client = build_model_extraction_client(settings, settings.model_extraction_models[0])
-        self.assertIsInstance(client, LocalTransformersExtractionClient)
+    def test_non_huggingface_provider_is_not_supported(self) -> None:
+        settings = _settings(configs=[ModelExtractionConfig(provider="unsupported_provider", model_id=DEFAULT_MODEL_ID)])
+        with self.assertRaises(RuntimeError):
+            build_model_extraction_client(settings, settings.model_extraction_models[0])
 
     def test_package_and_demo_modes_still_work(self) -> None:
         self.assertEqual(build_extractor(replace(_settings(), extractor_mode="package")).__class__.__name__, "DoctrRulesPresidioExtractor")
         self.assertIsInstance(build_extractor(replace(_settings(), app_env="test", extractor_mode="demo")), DemoExtractor)
 
     def test_model_extraction_validates_json_and_keeps_model_closeout_fields(self) -> None:
-        config = ModelExtractionConfig(provider="openai", model_id="test-model")
+        config = ModelExtractionConfig(provider="huggingface", model_id="test-model")
         extractor = ModelExtractor(
             _settings(configs=[config]),
-            clients={("openai", "test-model"): FakeClient(_payload())},
+            clients={("huggingface", "test-model"): FakeClient(_payload())},
             document_text_extractor=FakeDocumentTextExtractor(),
         )
         with tempfile.NamedTemporaryFile(suffix=".pdf") as tmp_file:
@@ -177,16 +220,16 @@ class ModelExtractorTest(unittest.TestCase):
         self.assertFalse(artifacts.metadata["fallback_used"])
 
     def test_best_quality_model_is_selected_from_two_configs(self) -> None:
-        weak_config = ModelExtractionConfig(provider="openai", model_id="weak-model")
-        strong_config = ModelExtractionConfig(provider="openai", model_id="strong-model")
+        weak_config = ModelExtractionConfig(provider="huggingface", model_id="weak-model")
+        strong_config = ModelExtractionConfig(provider="huggingface", model_id="strong-model")
         weak_payload = _payload(title="Issue needs attention")
         weak_payload["findings"][0]["plain_english_summary"] = "Issue needs attention."
         strong_payload = _payload(title="Fire-rated pipe penetration annular gap is below the required minimum")
         extractor = ModelExtractor(
             _settings(configs=[weak_config, strong_config]),
             clients={
-                ("openai", "weak-model"): FakeClient(weak_payload),
-                ("openai", "strong-model"): FakeClient(strong_payload),
+                ("huggingface", "weak-model"): FakeClient(weak_payload),
+                ("huggingface", "strong-model"): FakeClient(strong_payload),
             },
             document_text_extractor=FakeDocumentTextExtractor(),
         )
@@ -197,10 +240,10 @@ class ModelExtractorTest(unittest.TestCase):
         self.assertEqual(len(artifacts.metadata["model_attempts"]), 2)
 
     def test_poor_model_output_falls_back_to_package_extractor(self) -> None:
-        config = ModelExtractionConfig(provider="openai", model_id="test-model")
+        config = ModelExtractionConfig(provider="huggingface", model_id="test-model")
         extractor = ModelExtractor(
             _settings(configs=[config]),
-            clients={("openai", "test-model"): FakeClient({**_payload(), "findings": []})},
+            clients={("huggingface", "test-model"): FakeClient({**_payload(), "findings": []})},
             document_text_extractor=FakeDocumentTextExtractor("missing below minimum required defect"),
         )
         extractor.fallback = FakeFallback()
@@ -213,10 +256,10 @@ class ModelExtractorTest(unittest.TestCase):
     def test_duplicate_issue_titles_are_deduplicated(self) -> None:
         payload = _payload()
         payload["findings"] = payload["findings"] * 2
-        config = ModelExtractionConfig(provider="openai", model_id="test-model")
+        config = ModelExtractionConfig(provider="huggingface", model_id="test-model")
         extractor = ModelExtractor(
             _settings(configs=[config]),
-            clients={("openai", "test-model"): FakeClient(payload)},
+            clients={("huggingface", "test-model"): FakeClient(payload)},
             document_text_extractor=FakeDocumentTextExtractor(),
         )
         with tempfile.NamedTemporaryFile(suffix=".pdf") as tmp_file:

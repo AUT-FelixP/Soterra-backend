@@ -11,15 +11,12 @@ requires-python = ">=3.11"
 dependencies = [
   "argon2-cffi>=25,<26",
   "fastapi>=0.116,<1",
-  "huggingface_hub>=0.36,<1",
   "httpx>=0.28,<1",
-  "openai>=2.0.0,<3",
   "pillow>=10,<13",
   "pydantic>=2.11,<3",
   "PyMuPDF>=1.26,<2",
   "pypdf>=5,<6",
   "python-multipart>=0.0.20,<1",
-  "smolagents[litellm]>=1.18,<2",
   "supabase>=2.16,<3",
   "uvicorn>=0.35,<1",
 ]
@@ -31,17 +28,11 @@ package = [
   "python-doctr>=1,<2",
 ]
 demo = ["easyocr>=1.7,<2"]
-local-models = [
-  "accelerate>=1,<2",
-  "albumentations>=2.0.8,<3",
-  "einops>=0.8,<1",
-  "hf_xet>=1,<2",
-  "open_clip_torch>=3,<4",
-  "timm>=1.0.22,<2",
-  "torch>=2.4,<3",
-  "transformers>=4.57,<5",
+ml = ["scikit-learn>=1.5,<2"]
+model = [
+  "huggingface_hub>=0.36,<1",
+  "smolagents[litellm]>=1.18,<2",
 ]
-
 [project.scripts]
 app = "soterra_backend.api:app"
 

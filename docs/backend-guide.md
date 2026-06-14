@@ -21,8 +21,8 @@ The repo now has a Python backend package under `backend/soterra_backend` and th
   Shared PDF helpers used by model-backed extractors.
 - `backend/soterra_backend/demo_extractions.py`
   Contains curated fallback profiles for the three Kauri Apartments benchmark documents.
-- `backend/soterra_backend/ai.py`
-  Contains the OpenAI Responses API integration used by the model-backed extractor.
+- `backend/soterra_backend/extractors/model/document_text.py`
+  Contains the document parsing stage. It sends rendered PDF pages to a hosted Hugging Face vision model, with package/embedded text fallback if the hosted call fails.
 - `backend/soterra_backend/storage.py`
   Abstracts file storage. Local mode writes to `artifacts/backend/storage`; production mode writes to Supabase Storage.
 - `backend/soterra_backend/repository.py`
@@ -41,16 +41,14 @@ The backend now has two extraction layers:
 - `package`
   A local Python extraction package that uses `docTR + rules + Pydantic + Presidio`.
 - `model`
-  A model-backed slot for hosted or external extractors.
+  The default production path. A hosted SmolVLM model turns PDF page images into ordered text, then hosted SmolLM2 turns that text into the `ExtractionResult` schema. Package OCR is used only after the hosted model path fails quality/error checks.
 
 The current extractor options are:
 
-- `SOTERRA_EXTRACTOR_MODE=package`
-  Uses `SOTERRA_PACKAGE_EXTRACTOR=doctr_rules_presidio`
-- `SOTERRA_EXTRACTOR_MODE=openai`
-  Uses the OpenAI-backed model extractor directly
 - `SOTERRA_EXTRACTOR_MODE=model`
-  Uses `SOTERRA_MODEL_EXTRACTOR` so the provider can be swapped later without changing the service flow
+  Uses `SOTERRA_DOCUMENT_PARSE_*` for document parsing and `SOTERRA_EXTRACTION_*` for structured JSON extraction. Multiple structured extraction models can be configured with `SOTERRA_EXTRACTION_MODELS_JSON`.
+- `SOTERRA_EXTRACTOR_MODE=package`
+  Development/fallback mode using `SOTERRA_PACKAGE_EXTRACTOR=doctr_rules_presidio`
 - `SOTERRA_EXTRACTOR_MODE=demo`
   Uses deterministic demo profiles for fixture-style testing
 
@@ -80,20 +78,22 @@ This is the recommended demo path because it is:
 - maintainable without fine-tuning infrastructure
 - replaceable later
 
-## OpenAI integration
+## Model extraction
 
-The OpenAI model extractor lives in `backend/soterra_backend/ai.py`.
+The model extractor lives under `backend/soterra_backend/extractors/model/`.
 
 It works like this:
 
-1. Read the PDF text locally.
-2. If the text is too sparse, render page images and send those as image inputs too.
-3. Call the OpenAI Responses API with a strict JSON schema generated from `ExtractionResult`.
-4. Validate the JSON back into `ExtractionResult` before writing anything to the database.
+1. Render PDF pages to images.
+2. Send each page image to hosted Hugging Face document parsing.
+3. Pass the parsed document text/layout into the configured hosted structured extraction model.
+4. Validate the JSON back into `ExtractionResult`, score quality, and fall back to the package extractor when quality is too low.
 
-Important note:
+Recommended default model roles:
 
-As of April 16, 2026, OpenAI public API model pages still show `Free | Not supported` on current API model pages, so there is not a real free production API tier to rely on.
+- Document parsing: `SOTERRA_DOCUMENT_PARSE_MODEL_ID=HuggingFaceTB/SmolVLM-256M-Instruct`
+- Structured extraction and agent reasoning: `SOTERRA_EXTRACTION_MODEL_ID=HuggingFaceTB/SmolLM2-1.7B-Instruct` and `SOTERRA_AGENT_MODEL_ID=HuggingFaceTB/SmolLM2-1.7B-Instruct`
+- All model calls use `huggingface` through `huggingface_hub.InferenceClient` with `HF_TOKEN`.
 
 ## Database design
 
@@ -147,21 +147,20 @@ The local database file is:
 Set these environment variables:
 
 - `BACKEND_BASE_URL`
-- `HF_TOKEN` for the smolagents chat agent
+- `HF_TOKEN`
 - `SOTERRA_AGENT_ENABLED=true`
-- `SOTERRA_AGENT_MODEL_PROVIDER=huggingface`
-- `SOTERRA_AGENT_MODEL_ID=Qwen/Qwen2.5-72B-Instruct`
-- `SOTERRA_AGENT_HF_PROVIDER` optional Hugging Face Inference Provider name
-- `OPENAI_API_KEY` only when using the OpenAI report extractor
-- `OPENAI_MODEL` only when using the OpenAI report extractor
-- `SOTERRA_MODEL_EXTRACTOR=openai`
-- `SOTERRA_PACKAGE_EXTRACTOR=doctr_rules_presidio`
+- `SOTERRA_AGENT_PROVIDER=huggingface`
+- `SOTERRA_AGENT_MODEL_ID=HuggingFaceTB/SmolLM2-1.7B-Instruct`
+- `SOTERRA_DOCUMENT_PARSE_PROVIDER=huggingface`
+- `SOTERRA_DOCUMENT_PARSE_MODEL_ID=HuggingFaceTB/SmolVLM-256M-Instruct`
+- `SOTERRA_EXTRACTION_PROVIDER=huggingface`
+- `SOTERRA_EXTRACTION_MODEL_ID=HuggingFaceTB/SmolLM2-1.7B-Instruct`
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY`
 - `SUPABASE_STORAGE_BUCKET`
 - `SOTERRA_REPOSITORY_MODE=supabase`
 - `SOTERRA_STORAGE_MODE=supabase`
-- `SOTERRA_EXTRACTOR_MODE=openai` or `SOTERRA_EXTRACTOR_MODE=model`
+- `SOTERRA_EXTRACTOR_MODE=model`
 
 Use [.env.example](/C:/repos/Soterra-_Client/.env.example) as the template.
 
@@ -189,19 +188,18 @@ Recommended backend environment variables on Vercel:
 
 - `HF_TOKEN`
 - `SOTERRA_AGENT_ENABLED=true`
-- `SOTERRA_AGENT_MODEL_PROVIDER=huggingface`
-- `SOTERRA_AGENT_MODEL_ID=Qwen/Qwen2.5-72B-Instruct`
-- `SOTERRA_AGENT_HF_PROVIDER` optional
-- `OPENAI_API_KEY` only when using the OpenAI report extractor
-- `OPENAI_MODEL` only when using the OpenAI report extractor
-- `SOTERRA_MODEL_EXTRACTOR=openai`
-- `SOTERRA_PACKAGE_EXTRACTOR=doctr_rules_presidio`
+- `SOTERRA_AGENT_PROVIDER=huggingface`
+- `SOTERRA_AGENT_MODEL_ID=HuggingFaceTB/SmolLM2-1.7B-Instruct`
+- `SOTERRA_DOCUMENT_PARSE_PROVIDER=huggingface`
+- `SOTERRA_DOCUMENT_PARSE_MODEL_ID=HuggingFaceTB/SmolVLM-256M-Instruct`
+- `SOTERRA_EXTRACTION_PROVIDER=huggingface`
+- `SOTERRA_EXTRACTION_MODEL_ID=HuggingFaceTB/SmolLM2-1.7B-Instruct`
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY`
 - `SUPABASE_STORAGE_BUCKET`
 - `SOTERRA_REPOSITORY_MODE=supabase`
 - `SOTERRA_STORAGE_MODE=supabase`
-- `SOTERRA_EXTRACTOR_MODE=openai` or `SOTERRA_EXTRACTOR_MODE=model`
+- `SOTERRA_EXTRACTOR_MODE=model`
 
 ### Supabase
 
