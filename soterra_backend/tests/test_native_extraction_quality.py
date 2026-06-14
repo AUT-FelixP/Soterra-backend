@@ -3,11 +3,12 @@ from __future__ import annotations
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from soterra_backend.config import Settings
 from soterra_backend.extraction_quality_gate import ExtractionQualityError, validate_extraction_quality
 from soterra_backend.extractors.base import ExtractionArtifacts
-from soterra_backend.extractors.package_doctr import _build_rule_extraction, extract_issue_blocks
+from soterra_backend.extractors.package_doctr import DoctrRulesPresidioExtractor, _build_rule_extraction, extract_issue_blocks
 from soterra_backend.issue_intelligence import enrich_finding
 from soterra_backend.models import ExtractionResult, StoredFile
 from soterra_backend.services.report_service import IngestionStart, ReportIngestionService, UploadContext
@@ -70,6 +71,118 @@ class NativeExtractionQualityTest(unittest.TestCase):
 
         self.assertIn("Exact project location was not stated", enriched["plain_english_summary"])
         self.assertNotIn("at Kauri Apartments", enriched["plain_english_summary"])
+
+    def test_positive_penetration_observation_is_not_actionable(self) -> None:
+        finding = {
+            "title": "Cable penetration installation looks okay",
+            "description": "The fire stop installation looks okay. Cable bundle diameter is less than 20mm.",
+            "category": "Passive Fire",
+            "trade": "Passive Fire",
+            "severity": "Low",
+            "status": "Open",
+        }
+
+        enriched = enrich_finding(finding)
+
+        self.assertFalse(enriched["is_actionable"])
+        self.assertIn("positive observation", enriched["non_actionable_reason"])
+
+    def test_ocr_drawing_footer_noise_is_not_actionable(self) -> None:
+        finding = {
+            "title": "Whilst Products.tdy the informa useb drawingmaybea",
+            "description": "Whilst Products.tdy the informa useb drawingmaybea RyanFire legal proceedings termsa.",
+            "category": "Mechanical",
+            "trade": "Mechanical",
+            "severity": "Medium",
+            "status": "Open",
+        }
+
+        enriched = enrich_finding(finding)
+
+        self.assertFalse(enriched["is_actionable"])
+        self.assertIn("OCR/table/drawing noise", enriched["non_actionable_reason"])
+
+    def test_services_report_intro_text_is_not_actionable(self) -> None:
+        finding = {
+            "title": "We conducted a site inspection on 09.04.2024 to the following area; Level 3 Mechanical and Hydraulics Services",
+            "description": "We conducted a site inspection on 09.04.2024 to the following area; Level 3 Mechanical and Hydraulics Services. We note the following elements discussed on site.",
+            "category": "Mechanical",
+            "trade": "Mechanical",
+            "severity": "Low",
+            "status": "Open",
+        }
+
+        enriched = enrich_finding(finding)
+
+        self.assertFalse(enriched["is_actionable"])
+
+    def test_resolved_services_observation_is_not_actionable(self) -> None:
+        finding = {
+            "title": "Data had been installed to level 1 after missing previously",
+            "description": "Data had been installed to level 1 after missing previously.",
+            "category": "Mechanical",
+            "trade": "Mechanical",
+            "severity": "High",
+            "status": "Open",
+        }
+
+        enriched = enrich_finding(finding)
+
+        self.assertFalse(enriched["is_actionable"])
+
+    def test_services_duct_issue_gets_clear_display_title(self) -> None:
+        finding = {
+            "title": "suitable",
+            "description": "suitable. duct is squeezed by pipework amongst other issues. re-routing discussed with main contractor on site to use open space circled red.",
+            "category": "Mechanical",
+            "trade": "Mechanical",
+            "severity": "Low",
+            "status": "Open",
+        }
+
+        enriched = enrich_finding(finding)
+
+        self.assertTrue(enriched["is_actionable"])
+        self.assertEqual(enriched["display_title"], "Duct squeezed by pipework on level 2")
+
+    def test_package_extractor_does_not_run_ocr_when_disabled(self) -> None:
+        extractor = DoctrRulesPresidioExtractor(replace(_settings(), package_ocr_enabled=False))
+        with patch.dict("os.environ", {"SOTERRA_PACKAGE_OCR_ENABLED": "false"}, clear=False), \
+            patch("soterra_backend.extractors.package_doctr.extract_embedded_text", return_value=""), \
+            patch("soterra_backend.extractors.package_doctr._extract_text_with_doctr") as ocr:
+            artifacts = extractor.extract(_request(), Path("dummy.pdf"))
+
+        ocr.assert_not_called()
+        self.assertEqual(artifacts.metadata["text_source"], "embedded-text-sparse-ocr-disabled")
+        self.assertFalse(artifacts.metadata["ocr_attempted"])
+
+    def test_package_extractor_runs_ocr_when_enabled(self) -> None:
+        extractor = DoctrRulesPresidioExtractor(replace(_settings(), package_ocr_enabled=True, package_ocr_max_pages=3))
+        ocr_text = "Date 01/06/2026\n1. Level 2 riser failed fire stop inspection and close-out is required."
+        with patch.dict("os.environ", {"SOTERRA_PACKAGE_OCR_ENABLED": "true", "SOTERRA_PACKAGE_OCR_MAX_PAGES": "3"}, clear=False), \
+            patch("soterra_backend.extractors.package_doctr.extract_embedded_text", return_value=""), \
+            patch("soterra_backend.extractors.package_doctr._extract_text_with_doctr", return_value=ocr_text) as ocr:
+            artifacts = extractor.extract(_request(), Path("dummy.pdf"))
+
+        ocr.assert_called_once()
+        self.assertEqual(ocr.call_args.kwargs["max_pages"], 3)
+        self.assertEqual(artifacts.metadata["text_source"], "ocr")
+        self.assertTrue(artifacts.metadata["ocr_attempted"])
+        self.assertGreater(artifacts.metadata["raw_text_length"], 0)
+        self.assertIn(":ocr", artifacts.extractor_name)
+
+    def test_package_extractor_records_ocr_exception_metadata(self) -> None:
+        extractor = DoctrRulesPresidioExtractor(replace(_settings(), package_ocr_enabled=True, package_ocr_max_pages=3))
+        with self.assertLogs("soterra_backend", level="WARNING") as logs, \
+            patch.dict("os.environ", {"SOTERRA_PACKAGE_OCR_ENABLED": "true"}, clear=False), \
+            patch("soterra_backend.extractors.package_doctr.extract_embedded_text", return_value=""), \
+            patch("soterra_backend.extractors.package_doctr._extract_text_with_doctr", side_effect=ValueError("ocr exploded")):
+            artifacts = extractor.extract(_request(), Path("dummy.pdf"))
+
+        self.assertEqual(artifacts.metadata["text_source"], "embedded-text-sparse-ocr-failed")
+        self.assertTrue(artifacts.metadata["ocr_attempted"])
+        self.assertIn("ValueError: ocr exploded", artifacts.metadata["ocr_error"])
+        self.assertTrue(any("package_ocr_failed" in line for line in logs.output))
 
     def test_quality_gate_raises_for_issue_text_with_no_findings(self) -> None:
         extraction = _empty_extraction()

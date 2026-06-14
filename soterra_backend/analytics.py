@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from datetime import UTC, date, datetime
+import re
 from statistics import mean
 
 from .issue_intelligence import enrich_finding, enrich_findings, group_similar_issues
@@ -206,20 +207,20 @@ def build_insights_page(snapshot: RepositorySnapshot, inspection_type: str = "Al
                 "reportIds": sorted({item["document_id"] for item in matching if item.get("document_id")}),
                 "reports": _report_refs(snapshot, matching),
                 "categories": [label for label, _ in Counter(item.get("category") or "General" for item in matching).most_common(3)],
-                "locations": [label for label, _ in Counter((item.get("location") or item.get("site_name") or "Project-wide") for item in matching).most_common(3)],
+                "locations": [label for label, _ in Counter(_exact_location_label(item) for item in matching).most_common(3)],
             }
         )
 
     root_cause_items = _insight_group_items(
         snapshot,
         findings,
-        key_fn=lambda item: item.get("root_cause") or item.get("category") or "General",
+        key_fn=_root_cause_label,
         filter_type="rootCause",
     )
     high_risk_area_items = _insight_group_items(
         snapshot,
         findings,
-        key_fn=lambda item: item.get("location") or item.get("site_name") or "Project-wide",
+        key_fn=_exact_location_label,
         filter_type="highRiskArea",
     )
 
@@ -232,7 +233,7 @@ def build_insights_page(snapshot: RepositorySnapshot, inspection_type: str = "Al
         },
         "rootCauses": [item["label"] for item in root_cause_items] or ["No clear cause listed yet"],
         "rootCauseItems": root_cause_items,
-        "highRiskAreas": [item["label"] for item in high_risk_area_items] or ["Project-wide"],
+        "highRiskAreas": [item["label"] for item in high_risk_area_items],
         "highRiskAreaItems": high_risk_area_items,
         "repeatedPatterns": repeated_patterns,
         "issueThemes": group_similar_issues(findings)[:8],
@@ -717,7 +718,9 @@ def _report_payload(document: dict, findings: list[dict]) -> dict:
     return {
         "id": document["id"],
         "project": document["project_name"],
+        "projectName": document["project_name"],
         "site": document["site_name"],
+        "siteName": document["site_name"],
         "address": document.get("address"),
         "createdAt": document["report_date"],
         "uploadedAt": document.get("uploaded_at"),
@@ -774,6 +777,14 @@ def _top_failure_driver_rows(findings: list[dict], limit: int) -> list[dict]:
         )
     rows.sort(key=lambda row: (-row["failCount"], row["issue"]))
     return rows[:limit]
+
+
+def _root_cause_label(item: dict) -> str:
+    root_cause = str(item.get("root_cause") or "").strip()
+    category = str(item.get("display_category") or item.get("category") or "").strip()
+    if root_cause and root_cause.lower() != "general":
+        return root_cause
+    return category or "General"
 
 
 def _insight_group_items(snapshot: RepositorySnapshot, findings: list[dict], *, key_fn, filter_type: str) -> list[dict]:
@@ -1102,3 +1113,14 @@ def _days_since(iso_value: str) -> int:
 
 def _pretty_date(iso_value: str) -> str:
     return datetime.fromisoformat(iso_value.replace("Z", "+00:00")).strftime("%d %b")
+
+
+def _exact_location_label(item: dict) -> str:
+    for value in (item.get("location"), item.get("unit_label")):
+        if not value:
+            continue
+        label = str(value).strip()
+        if not label or re.fullmatch(r"\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?", label):
+            continue
+        return label
+    return "Exact location not stated"

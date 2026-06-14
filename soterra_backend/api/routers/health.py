@@ -21,6 +21,11 @@ def extraction_health(request: Request) -> dict:
     return {
         "extractor_mode": settings.extractor_mode,
         "package_extractor": settings.package_extractor,
+        "process_inline": True,
+        "configured_process_inline": settings.process_inline,
+        "document_parse_provider": settings.soterra_document_parse_provider,
+        "package_ocr_enabled": getattr(settings, "package_ocr_enabled", False),
+        "timeout_seconds": getattr(settings, "extraction_timeout_seconds", settings.model_extraction_timeout_seconds),
         "allow_model_extraction": settings.allow_model_extraction,
         "package_available": package_available,
         "status": "ok" if settings.extractor_mode == "package" and package_available else "configured",

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Response, UploadFile
 
 from ...schemas.reports import BulkDeleteReportsRequest
 from ...services.report_service import ReportUploadService
@@ -30,7 +30,6 @@ def bulk_delete_reports(
 
 @router.post("", status_code=201)
 async def create_report(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     project: str = Form(...),
     site: str = Form(...),
@@ -43,7 +42,6 @@ async def create_report(
     _ = status
     _ = inspector
     return await service.upload_report(
-        background_tasks=background_tasks,
         file=file,
         tenant_id=context.tenant_id,
         project=project,
@@ -54,7 +52,6 @@ async def create_report(
 
 @router.post("/bulk")
 async def create_reports_bulk(
-    background_tasks: BackgroundTasks,
     files: list[UploadFile] = File(...),
     project: str = Form(...),
     site: str = Form(...),
@@ -67,7 +64,6 @@ async def create_reports_bulk(
     _ = status
     _ = inspector
     return await service.upload_reports_bulk(
-        background_tasks=background_tasks,
         files=files,
         tenant_id=context.tenant_id,
         project=project,

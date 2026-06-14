@@ -839,6 +839,39 @@ class AgentToolCoverageTest(unittest.TestCase):
         self.assertIn("Labelled after photo", response.answer)
         self.assertEqual(response.mode, "evidence_mode")
 
+    def test_native_agent_open_issue_answer_is_actionable_for_site_users(self) -> None:
+        repo = FakeRepository()
+        repo.snapshot.findings[0]["required_fix"] = "Install the missing fire collar and photograph the completed fire stop."
+        repo.snapshot.findings[0]["evidence_required"] = ["After photo", "Trade sign-off"]
+        service = NativeAgentService(repo)
+
+        response = service.chat(tenant_id="ten-1", user_id="usr-1", message="List open issues and where to fix them")
+
+        self.assertEqual(response.mode, "full_register_mode")
+        self.assertIn("What to fix first", response.answer)
+        self.assertIn("| Priority | Issue | Location | Trade | Source | Recommended action |", response.answer)
+        self.assertIn("| High | Fire collar missing | Riser | Fire | inspection.pdf |", response.answer)
+        self.assertIn("Install the missing fire collar", response.answer)
+        self.assertIn("Evidence: After photo, Trade sign-off", response.answer)
+
+    def test_native_agent_latest_report_scope_uses_page_context(self) -> None:
+        repo = FakeRepository()
+        repo.snapshot.findings[2]["status"] = "Open"
+        repo.snapshot.findings[2]["title"] = "Sealant close-out evidence missing"
+        repo.snapshot.findings[2]["description"] = "Sealant close-out evidence missing and required before reinspection."
+        service = NativeAgentService(repo)
+
+        response = service.chat(
+            tenant_id="ten-1",
+            user_id="usr-1",
+            message="What are the open issues?",
+            page_context="Latest report",
+        )
+
+        self.assertIn("handover.pdf", response.answer)
+        self.assertIn("Sealant close-out evidence missing", response.answer)
+        self.assertNotIn("inspection.pdf", response.answer)
+
     def test_native_agent_repeated_patterns_returns_recurring_findings(self) -> None:
         service = NativeAgentService(FakeRepository())
 

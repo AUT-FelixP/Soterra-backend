@@ -4,15 +4,16 @@ import hashlib
 import logging
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from fastapi import BackgroundTasks, HTTPException, UploadFile
+from fastapi import HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
 from ..config import Settings
-from ..extraction_quality_gate import validate_extraction_quality
+from ..extraction_quality_gate import ExtractionQualityError, validate_extraction_quality
 from ..extractors import build_extractor
 from ..extractors.base import ExtractionRequest
 from ..models import ExtractionResult, IngestionOutcome
@@ -128,6 +129,16 @@ class ReportIngestionService:
         )
 
     def finish_ingest(self, start: IngestionStart, upload: UploadContext) -> dict:
+        """
+        Complete extraction and persist the final report.
+
+        Beginner explanation:
+        - The placeholder document was already created in start_ingest().
+        - This method actually runs extraction.
+        - If extraction succeeds, we mark the document completed.
+        - If extraction fails, we mark the job failed.
+        - This prevents reports from staying stuck in "processing".
+        """
         started = time.perf_counter()
         raw_text = ""
         extractor_name = self.settings.extractor_mode
@@ -135,7 +146,12 @@ class ReportIngestionService:
 
         try:
             logger.info("extraction_start report_id=%s", start.document_id)
-            extraction, raw_text, extractor_name, extraction_metadata = self._extract(upload, start.stored_file)
+
+            extraction, raw_text, extractor_name, extraction_metadata = self._extract_with_timeout(
+                upload,
+                start.stored_file,
+            )
+
             logger.info(
                 "extraction_done report_id=%s extractor=%s findings=%d predicted=%d raw_text_len=%d",
                 start.document_id,
@@ -144,6 +160,17 @@ class ReportIngestionService:
                 len(extraction.predicted_inspections),
                 len(raw_text),
             )
+
+            # Quality gate:
+            # This checks that we do not accidentally save a report as completed
+            # when the text looks like it has issues but findings=[].
+            quality_metadata = validate_extraction_quality(extraction, raw_text)
+
+            extraction_metadata = {
+                **extraction_metadata,
+                **quality_metadata,
+            }
+
             normalized = extraction.model_copy(
                 update={
                     "project_name": upload.project_name,
@@ -152,7 +179,7 @@ class ReportIngestionService:
                     "overall_outcome": summarize_status([item.severity for item in extraction.findings]),
                 }
             )
-            quality_diagnostics = validate_extraction_quality(normalized, raw_text)
+
             self.repository.complete_document(
                 tenant_id=upload.tenant_id,
                 document_id=start.document_id,
@@ -165,14 +192,32 @@ class ReportIngestionService:
                 raw_payload={
                     **normalized.model_dump(),
                     "extraction_metadata": extraction_metadata,
-                    "quality_gate": quality_diagnostics,
                 },
             )
+
             logger.info(
                 "persist_done report_id=%s elapsed_ms=%d",
                 start.document_id,
                 int((time.perf_counter() - started) * 1000),
             )
+
+        except ExtractionQualityError as exc:
+            self.repository.fail_job(
+                tenant_id=upload.tenant_id,
+                document_id=start.document_id,
+                job_id=start.job_id,
+                extractor_name=extractor_name,
+                error_message=str(exc),
+                raw_text=raw_text,
+            )
+            logger.warning(
+                "ingest_quality_failed report_id=%s diagnostics=%s elapsed_ms=%d",
+                start.document_id,
+                exc.diagnostics,
+                int((time.perf_counter() - started) * 1000),
+            )
+            raise
+
         except Exception as exc:
             self.repository.fail_job(
                 tenant_id=upload.tenant_id,
@@ -192,7 +237,41 @@ class ReportIngestionService:
         report = self.repository.get_report(upload.tenant_id, start.document_id)
         if not report:
             raise RuntimeError("The report was processed but could not be loaded back from the repository.")
+
         return report
+
+    def _extract_with_timeout(
+            self,
+            upload: UploadContext,
+            stored_file,
+    ) -> tuple[ExtractionResult, str, str, dict]:
+        """
+        Run extraction with a timeout.
+
+        Beginner explanation:
+        - Sometimes OCR/model extraction can hang.
+        - This wrapper gives extraction a maximum time.
+        - If it takes too long, we raise an error.
+        - Then finish_ingest() marks the job as failed instead of leaving it processing.
+        """
+        timeout_seconds = int(getattr(self.settings, "extraction_timeout_seconds", 90) or 90)
+
+        executor = ThreadPoolExecutor(max_workers=1)
+
+        try:
+            future = executor.submit(self._extract, upload, stored_file)
+
+            try:
+                return future.result(timeout=timeout_seconds)
+            except FutureTimeoutError as exc:
+                raise TimeoutError(
+                    f"Extraction timed out after {timeout_seconds} seconds."
+                ) from exc
+
+        finally:
+            # Do not block the request forever while shutting down.
+            # This prevents the request from hanging if OCR is stuck.
+            executor.shutdown(wait=False, cancel_futures=True)
 
     def _extract(self, upload: UploadContext, stored_file) -> tuple[ExtractionResult, str, str, dict]:
         suffix = ".pdf" if upload.file_type == "pdf" else ".docx"
@@ -237,7 +316,6 @@ class ReportUploadService:
     async def upload_report(
         self,
         *,
-        background_tasks: BackgroundTasks,
         file: UploadFile,
         tenant_id: str,
         project: str,
@@ -252,7 +330,6 @@ class ReportUploadService:
             logger.warning("upload_rejected tenant_id=%s reason=rate_limit", tenant_id)
             raise HTTPException(status_code=429, detail="Too many report uploads. Please try again later.")
         payload = await self.upload_one_report(
-            background_tasks=background_tasks,
             file=file,
             tenant_id=tenant_id,
             project=project,
@@ -266,7 +343,6 @@ class ReportUploadService:
     async def upload_reports_bulk(
         self,
         *,
-        background_tasks: BackgroundTasks,
         files: list[UploadFile],
         tenant_id: str,
         project: str,
@@ -288,7 +364,6 @@ class ReportUploadService:
             filename = file.filename or "uploaded-report"
             try:
                 payload = await self.upload_one_report(
-                    background_tasks=background_tasks,
                     file=file,
                     tenant_id=tenant_id,
                     project=project,
@@ -319,7 +394,6 @@ class ReportUploadService:
     async def upload_one_report(
         self,
         *,
-        background_tasks: BackgroundTasks,
         file: UploadFile,
         tenant_id: str,
         project: str,
@@ -392,23 +466,26 @@ class ReportUploadService:
             raise HTTPException(status_code=409, detail="This file has already been uploaded.")
 
         assert start is not None
-        if self.settings.process_inline:
-            try:
-                report = self.ingestion_service.finish_ingest(start, upload_ctx)
-            except Exception as exc:
-                deleted = self.repository.delete_report(tenant_id, start.document_id)
-                if deleted or getattr(start.stored_file, "storage_path", None):
-                    self.storage.delete(
-                        tenant_id=tenant_id,
-                        document_id=start.document_id,
-                        filename=upload_ctx.stored_filename,
-                    )
-                raise HTTPException(status_code=422, detail="Report extraction failed. The upload was not saved.") from exc
-            return {"item": report, "isDuplicate": False, "_status_code": 201, "_bytes": len(content)}
-
-        background_tasks.add_task(self.ingestion_service.finish_ingest, start, upload_ctx)
-        placeholder = self.repository.get_report(tenant_id, start.document_id) or {"id": start.document_id}
-        return {"item": placeholder, "isDuplicate": False, "isProcessing": True, "_status_code": 202, "_bytes": len(content)}
+        try:
+            report = self.ingestion_service.finish_ingest(start, upload_ctx)
+        except ExtractionQualityError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": str(exc),
+                    "diagnostics": exc.diagnostics,
+                    "reportId": start.document_id,
+                },
+            ) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": "Report extraction failed. The failed report row was kept for debugging.",
+                    "reportId": start.document_id,
+                },
+            ) from exc
+        return {"item": report, "isDuplicate": False, "isProcessing": False, "_status_code": 201, "_bytes": len(content)}
 
     def list_reports(self, *, tenant_id: str) -> dict:
         from ..analytics import build_report_list

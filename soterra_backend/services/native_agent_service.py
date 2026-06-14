@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from collections import Counter, defaultdict
+from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime
 import json
 import re
 from typing import Any, Callable
@@ -65,14 +66,14 @@ class NativeAgentService:
         project_slug: str | None = None,
         page_context: str | None = None,
     ) -> AgentChatResponse:
-        _ = role, report_id, issue_id, page_context
+        _ = role, report_id, issue_id
         session = self._get_or_create_session(tenant_id=tenant_id, user_id=user_id, session_id=session_id, message=message)
         history = self.repository.list_agent_chat_messages(tenant_id=tenant_id, user_id=user_id, session_id=session.id, limit=24)
         memory = self.repository.list_agent_memory_entries(tenant_id=tenant_id, user_id=user_id, session_id=session.id, limit=10) if hasattr(self.repository, "list_agent_memory_entries") else []
         self.repository.add_agent_chat_message(tenant_id=tenant_id, user_id=user_id, session_id=session.id, role="user", content=message)
 
         snapshot = self.repository.load_snapshot(tenant_id)
-        query = _contextual_query(message, history, memory, project_slug)
+        query = _contextual_query(message, history, memory, project_slug, page_context)
         tool = self.registry.select(query)
         payload = tool.handler(_active_snapshot(snapshot), query)
         answer = payload["answer"]
@@ -192,10 +193,10 @@ def _active_snapshot(snapshot: RepositorySnapshot) -> RepositorySnapshot:
     return snapshot.model_copy(update={"documents": active_documents, "findings": enrich_findings(active_findings, actionable_only=True)})
 
 
-def _contextual_query(message: str, history: list[Any], memory: list[Any], project_slug: str | None) -> str:
+def _contextual_query(message: str, history: list[Any], memory: list[Any], project_slug: str | None, page_context: str | None) -> str:
     recent = " ".join(getattr(item, "content", "") for item in history[-4:])
     summaries = " ".join(getattr(item, "content", "") for item in memory[-3:])
-    return " ".join(part for part in [project_slug or "", recent, summaries, message] if part)
+    return " ".join(part for part in [project_slug or "", page_context or "", recent, summaries, message] if part)
 
 
 def _open_findings(snapshot: RepositorySnapshot) -> list[dict]:
@@ -220,7 +221,7 @@ def _result(answer: str, items: list[dict], *, mode: str = "summary_mode", confi
 
 
 def _summarize_project(snapshot: RepositorySnapshot, query: str) -> dict:
-    findings = _filter_by_query_project(_open_findings(snapshot), query)
+    findings = _filter_findings_for_query(snapshot, _open_findings(snapshot), query)
     if not snapshot.documents:
         return _result("I do not see uploaded reports for this account yet. Upload an inspection report and wait for extraction to finish.", [], confidence="low")
     lines = [f"I found {len(snapshot.documents)} active report(s) and {len(findings)} open issue(s)."]
@@ -241,26 +242,24 @@ def _summarize_project(snapshot: RepositorySnapshot, query: str) -> dict:
 
 
 def _list_open_issues(snapshot: RepositorySnapshot, query: str) -> dict:
-    findings = _filter_by_query_project(_open_findings(snapshot), query)
+    findings = sorted(_filter_findings_for_query(snapshot, _open_findings(snapshot), query), key=_issue_sort_key)
     if not findings:
         return _result("I do not see open issues in the current tenant data. Check that reports have finished extracting.", [], confidence="medium")
-    lines = [f"There are {len(findings)} open issue(s):"]
-    for item in findings[:10]:
-        location = item.get("location") or item.get("unit_label") or "exact location not stated"
-        lines.append(f"- {item.get('severity')}: {item.get('display_title') or item.get('title')} ({location}).")
-    return _result("\n".join(lines), findings, mode="full_register_mode")
+    return _result(_format_issue_action_summary(findings, snapshot), findings, mode="full_register_mode")
 
 
 def _high_priority_issues(snapshot: RepositorySnapshot, query: str) -> dict:
-    findings = [item for item in _filter_by_query_project(_open_findings(snapshot), query) if item.get("severity") in {"High", "Critical"}]
-    lines = [f"{len(findings)} high-priority open issue(s) need attention."]
-    for item in findings[:8]:
-        lines.append(f"- {item.get('severity')}: {item.get('display_title') or item.get('title')} - {item.get('required_fix') or 'Rectify and collect evidence.'}")
-    return _result("\n".join(lines), findings, mode="action_plan_mode")
+    findings = sorted(
+        [item for item in _filter_findings_for_query(snapshot, _open_findings(snapshot), query) if item.get("severity") in {"High", "Critical"}],
+        key=_issue_sort_key,
+    )
+    if not findings:
+        return _result("I do not see high-priority open issues in the current tenant data.", [], mode="action_plan_mode")
+    return _result(_format_issue_action_summary(findings, snapshot, heading="High-priority issues to close out"), findings, mode="action_plan_mode")
 
 
 def _evidence_needed(snapshot: RepositorySnapshot, query: str) -> dict:
-    findings = _filter_by_query_project(_open_findings(snapshot), query)
+    findings = _filter_findings_for_query(snapshot, _open_findings(snapshot), query)
     needing = [item for item in findings if item.get("evidence_required")]
     if not needing:
         return _result("I do not see evidence requirements on the current open findings. Re-run extraction or review the report manually.", findings, confidence="medium")
@@ -272,21 +271,21 @@ def _evidence_needed(snapshot: RepositorySnapshot, query: str) -> dict:
 
 
 def _issues_by_trade(snapshot: RepositorySnapshot, query: str) -> dict:
-    findings = _filter_by_query_project(_open_findings(snapshot), query)
+    findings = _filter_findings_for_query(snapshot, _open_findings(snapshot), query)
     counts = Counter(item.get("trade") or "General" for item in findings)
     answer = "Open issues by trade:\n" + "\n".join(f"- {trade}: {count}" for trade, count in counts.most_common()) if counts else "No open issue trades are available."
     return _result(answer, findings, mode="trade_mode", extra={"byTrade": dict(counts)})
 
 
 def _issues_by_location(snapshot: RepositorySnapshot, query: str) -> dict:
-    findings = _filter_by_query_project(_open_findings(snapshot), query)
+    findings = _filter_findings_for_query(snapshot, _open_findings(snapshot), query)
     counts = Counter(item.get("location") or item.get("unit_label") or "Exact location not stated" for item in findings)
     answer = "Open issues by location:\n" + "\n".join(f"- {location}: {count}" for location, count in counts.most_common()) if counts else "No open issue locations are available."
     return _result(answer, findings, mode="location_mode", extra={"byLocation": dict(counts)})
 
 
 def _repeated_patterns(snapshot: RepositorySnapshot, query: str) -> dict:
-    findings = _filter_by_query_project(snapshot.findings, query)
+    findings = _filter_findings_for_query(snapshot, snapshot.findings, query)
     themes = group_similar_issues(findings)
     repeated = [theme for theme in themes if theme["count"] > 1]
     repeated_ids = {issue_id for theme in repeated for issue_id in theme["issueIds"]}
@@ -328,30 +327,127 @@ def _extraction_failures(snapshot: RepositorySnapshot, query: str) -> dict:
 
 
 def _todays_fix_list(snapshot: RepositorySnapshot, query: str) -> dict:
-    findings = sorted(_filter_by_query_project(_open_findings(snapshot), query), key=lambda item: (_severity_rank(item), -int(item.get("recurrence_risk") or 0)))
-    lines = ["Today's fix list:"]
-    for index, item in enumerate(findings[:8], start=1):
-        location = item.get("location") or item.get("unit_label") or "exact location not stated"
-        lines.append(f"{index}. {item.get('display_title') or item.get('title')} - {item.get('trade') or 'General'} at {location}.")
+    findings = sorted(_filter_findings_for_query(snapshot, _open_findings(snapshot), query), key=_issue_sort_key)
     if not findings:
-        lines.append("No open fixes are available from extracted findings.")
-    return _result("\n".join(lines), findings, mode="action_plan_mode")
+        return _result("No open fixes are available from extracted findings.", [], mode="action_plan_mode")
+    return _result(_format_issue_action_summary(findings, snapshot, heading="Today's fix list"), findings, mode="action_plan_mode")
 
 
-def _filter_by_query_project(findings: list[dict], query: str) -> list[dict]:
+def _filter_findings_for_query(snapshot: RepositorySnapshot, findings: list[dict], query: str) -> list[dict]:
     lowered = query.lower()
+    selected = findings
     slugs = {item.get("project_slug") for item in findings if item.get("project_slug") and str(item.get("project_slug")).replace("-", " ") in lowered}
     if slugs:
-        return [item for item in findings if item.get("project_slug") in slugs]
-    return findings
+        selected = [item for item in selected if item.get("project_slug") in slugs]
+    if _wants_latest_report(lowered):
+        latest = _latest_document(snapshot.documents, selected)
+        if latest:
+            return [item for item in selected if item.get("document_id") == latest.get("id")]
+    return selected
+
+
+def _wants_latest_report(query: str) -> bool:
+    return "latest report" in query or "latest inspection" in query or ("latest" in query and "report" in query)
+
+
+def _latest_document(documents: list[dict], findings: list[dict]) -> dict | None:
+    finding_document_ids = {item.get("document_id") for item in findings if item.get("document_id")}
+    candidates = [item for item in documents if not finding_document_ids or item.get("id") in finding_document_ids]
+    if not candidates:
+        return None
+    return sorted(candidates, key=_document_recency_key, reverse=True)[0]
+
+
+def _document_recency_key(document: dict) -> tuple[datetime, str]:
+    for key in ("uploaded_at", "created_at", "report_date"):
+        parsed = _parse_datetime(document.get(key))
+        if parsed:
+            return (parsed, str(document.get("id") or ""))
+    return (datetime.min, str(document.get("id") or ""))
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    text = str(value).replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
 
 
 def _severity_rank(item: dict) -> int:
     return {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}.get(str(item.get("severity")), 4)
 
 
-def _highest(items: list[dict]) -> str:
-    return sorted((str(item.get("severity") or "Low") for item in items), key=lambda value: {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}.get(value, 4))[0]
+def _issue_sort_key(item: dict) -> tuple[int, int, str]:
+    return (_severity_rank(item), -int(item.get("recurrence_risk") or 0), str(item.get("display_title") or item.get("title") or ""))
+
+
+def _format_issue_action_summary(findings: list[dict], snapshot: RepositorySnapshot, *, heading: str = "What to fix first") -> str:
+    report_lookup = {str(item.get("id")): item for item in snapshot.documents}
+    projects = Counter(item.get("project_name") or "Unknown project" for item in findings)
+    severities = Counter(item.get("severity") or "Unrated" for item in findings)
+    project_label = ", ".join(project for project, _ in projects.most_common(3))
+    severity_label = ", ".join(f"{count} {severity}" for severity, count in severities.most_common())
+
+    lines = [f"I found {len(findings)} open issue(s) from the extracted report data."]
+    if project_label:
+        lines.append(f"Project/site: {project_label}.")
+    if severity_label:
+        lines.append(f"Priority mix: {severity_label}.")
+    lines.append("")
+    lines.append(f"{heading}:")
+    lines.append("| Priority | Issue | Location | Trade | Source | Recommended action |")
+    lines.append("| --- | --- | --- | --- | --- | --- |")
+
+    for item in findings[:10]:
+        title = item.get("display_title") or item.get("title") or "Recorded inspection issue"
+        location = _issue_location(item)
+        trade = item.get("trade") or item.get("display_category") or item.get("category") or "General"
+        source = _issue_source(item, report_lookup)
+        fix = item.get("required_fix") or "Assign an owner, complete the fix, and upload close-out evidence."
+        evidence = _format_evidence(item.get("evidence_required"))
+        action = f"{fix} Evidence: {evidence}"
+        lines.append(
+            "| "
+            + " | ".join(
+                _table_cell(value)
+                for value in [item.get("severity") or "Unrated", title, location, trade, source, action]
+            )
+            + " |"
+        )
+
+    missing_locations = sum(1 for item in findings if _issue_location(item) == "Exact location not stated in the report")
+    if missing_locations:
+        lines.append("")
+        lines.append(f"Location note: {missing_locations} issue(s) did not include an exact location in the extracted report text.")
+    if len(findings) > 10:
+        lines.append(f"Showing the first 10 issues by priority; {len(findings) - 10} more are available in the tracker.")
+    return "\n".join(lines)
+
+
+def _issue_location(item: dict) -> str:
+    return str(item.get("location") or item.get("unit_label") or "Exact location not stated in the report")
+
+
+def _issue_source(item: dict, report_lookup: dict[str, dict]) -> str:
+    document = report_lookup.get(str(item.get("document_id")))
+    if not document:
+        return "Uploaded report"
+    return str(document.get("source_filename") or document.get("filename") or document.get("id") or "Uploaded report")
+
+
+def _format_evidence(value: Any) -> str:
+    if isinstance(value, list) and value:
+        return ", ".join(str(item) for item in value)
+    if isinstance(value, str) and value.strip():
+        return value
+    return "Close-out photo and responsible trade sign-off."
+
+
+def _table_cell(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).replace("|", "/").strip()
 
 
 def _top_topics(text: str) -> list[str]:

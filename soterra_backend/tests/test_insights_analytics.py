@@ -17,6 +17,7 @@ def _finding(
     location: str = "Level 2",
     severity: str = "High",
     project_lifecycle: str = "active",
+    root_cause: str | None = None,
 ) -> dict:
     return {
         "id": id,
@@ -31,6 +32,7 @@ def _finding(
         "severity": severity,
         "trade": "General",
         "category": category,
+        "root_cause": root_cause or category,
         "location": location,
         "inspection_type": inspection_type,
         "status": "Open",
@@ -137,6 +139,37 @@ class InsightsAnalyticsTest(unittest.TestCase):
         self.assertEqual(high_risk_area["count"], 2)
         self.assertEqual(high_risk_area["tableFilter"], {"type": "highRiskArea", "value": "Level 2"})
         self.assertEqual(len(high_risk_area["reports"]), 2)
+
+    def test_generic_root_cause_uses_enriched_category(self) -> None:
+        snapshot = RepositorySnapshot(
+            projects=[],
+            documents=[
+                {
+                    "id": "rpt-1",
+                    "project_name": "Kauri Apartments",
+                    "site_name": "Kauri Apartments",
+                    "inspection_type": "Fire",
+                    "report_date": "2026-01-01",
+                }
+            ],
+            jobs=[],
+            findings=[
+                _finding(
+                    id="iss-1",
+                    title="Fixings are missing on the bottom part of plasterboard linings",
+                    document_id="rpt-1",
+                    project_name="Kauri Apartments",
+                    inspection_type="Fire",
+                    category="General",
+                    root_cause="General",
+                )
+            ],
+            predicted_inspections=[],
+        )
+
+        payload = build_insights_page(snapshot)
+
+        self.assertEqual(payload["rootCauseItems"][0]["label"], "Passive Fire - Linings")
 
     def test_training_and_table_metadata_are_available(self) -> None:
         payload = build_insights_page(_snapshot())

@@ -117,7 +117,7 @@ class ApiTenantIsolationTest(unittest.IsolatedAsyncioTestCase):
             files={"file": ("report.pdf", self.pdf, "application/pdf")},
             headers=headers,
         )
-        self.assertEqual(response.status_code, 202, response.text)
+        self.assertEqual(response.status_code, 201, response.text)
         return response.json()["item"]
 
     async def test_cross_tenant_reports_files_and_forged_header_are_isolated(self) -> None:

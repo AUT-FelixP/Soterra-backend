@@ -5,10 +5,12 @@ from datetime import UTC, datetime
 import json
 import logging
 import os
+import re
 import time
 from typing import Any
 
 from ..analytics import build_insights_page
+from ..issue_intelligence import enrich_findings
 from ..models import RepositorySnapshot
 from ..repositories.base import RepositoryBackend
 
@@ -35,13 +37,14 @@ class InsightsAgentService:
         snapshot = self._load_snapshot_with_retry(tenant_id)
         if snapshot is None:
             return _repository_unavailable_response(selected)
-        findings = _filter_findings(snapshot.findings, selected)
+        display_findings = enrich_findings(snapshot.findings, actionable_only=True)
+        findings = _filter_findings(display_findings, selected)
         deterministic = build_insights_page(snapshot, _legacy_filter(selected))
         fallback = self._fallback_response(
             findings=findings,
             deterministic=deterministic,
             selected=selected,
-            all_findings=snapshot.findings,
+            all_findings=display_findings,
         )
 
         if self._provider() == "native":
@@ -153,10 +156,10 @@ class InsightsAgentService:
             "repeatedPatterns": repeated,
             "highRiskAreas": high_risk,
             "rootCauses": root_causes,
-            "suggestedQuestions": _suggested_questions(selected),
             "learningInsights": [],
             "oldProjectLessons": historical_lessons,
-            "suggestedAgentQuestions": _suggested_questions(selected),
+            "suggestedQuestions": [],
+            "suggestedAgentQuestions": [],
         }
 
 
@@ -196,7 +199,6 @@ def _build_prompt(*, findings_context: list[dict], deterministic: dict, selected
         ],
         "highRiskAreas": [{"area": "string", "riskReason": "string", "recommendedAction": "string"}],
         "rootCauses": [{"cause": "string", "scope": "current|historical|mixed", "explanation": "string", "preventionSteps": ["string"]}],
-        "suggestedQuestions": ["string"],
     }
     return json.dumps(
         {
@@ -248,8 +250,8 @@ def _repository_unavailable_response(selected: str) -> dict:
         "repeatedPatterns": [],
         "highRiskAreas": [],
         "rootCauses": [],
-        "suggestedQuestions": _suggested_questions(selected),
-        "suggestedAgentQuestions": _suggested_questions(selected),
+        "suggestedQuestions": [],
+        "suggestedAgentQuestions": [],
     }
 
 
@@ -266,8 +268,8 @@ def _compact_findings(findings: list[dict]) -> list[dict]:
     for item in ranked[: int(os.getenv("SOTERRA_AI_INSIGHTS_MAX_FINDINGS", str(MAX_FINDINGS_FOR_AI)))]:
         compact.append(
             {
-                "title": item.get("title"),
-                "description": item.get("description"),
+                "title": item.get("display_title") or item.get("title"),
+                "description": item.get("plain_english_summary") or item.get("description"),
                 "severity": _severity(item.get("severity")),
                 "trade": item.get("trade"),
                 "category": item.get("category"),
@@ -292,9 +294,8 @@ def _merge_ai_payload(fallback: dict, ai_payload: dict) -> dict:
         value = ai_payload.get(key)
         if isinstance(value, list) and value:
             merged[key] = value
-    if "suggestedQuestions" not in merged and isinstance(ai_payload.get("suggestedAgentQuestions"), list):
-        merged["suggestedQuestions"] = ai_payload["suggestedAgentQuestions"]
-    merged["suggestedAgentQuestions"] = merged.get("suggestedQuestions") or merged.get("suggestedAgentQuestions") or []
+    merged["suggestedQuestions"] = []
+    merged["suggestedAgentQuestions"] = []
     merged["aiAvailable"] = True
     merged["fallbackMessage"] = None
     merged["confidenceNote"] = "Generated from tenant-scoped extracted findings using Soterra AI, with deterministic analytics used as guardrails."
@@ -305,7 +306,7 @@ def _coerce_response_shape(payload: dict) -> dict:
     payload["currentProjectActions"] = [
         {
             "issue": str(item.get("issue") or "Current finding"),
-            "location": str(item.get("location") or "Project-wide"),
+            "location": _exact_location_label(item),
             "severity": _severity(item.get("severity")),
             "trade": str(item.get("trade") or "General"),
             "category": _insight_category(item),
@@ -371,7 +372,7 @@ def _coerce_response_shape(payload: dict) -> dict:
     ][:8]
     payload["highRiskAreas"] = [
         {
-            "area": str(item.get("area") or "Project-wide"),
+            "area": _coerced_location_label(item.get("area")),
             "riskReason": str(item.get("riskReason") or "Findings are concentrated here."),
             "recommendedAction": str(item.get("recommendedAction") or "Inspect this area before booking the next inspection."),
         }
@@ -387,8 +388,8 @@ def _coerce_response_shape(payload: dict) -> dict:
         for item in payload.get("rootCauses", [])
     ][:5]
     payload["executiveSummary"] = _string_list(payload.get("executiveSummary"))[:4]
-    payload["suggestedQuestions"] = _string_list(payload.get("suggestedQuestions", payload.get("suggestedAgentQuestions")))[:6]
-    payload["suggestedAgentQuestions"] = payload["suggestedQuestions"]
+    payload["suggestedQuestions"] = []
+    payload["suggestedAgentQuestions"] = []
     return payload
 
 
@@ -468,7 +469,7 @@ def _fallback_root_causes(current_findings: list[dict], historical_findings: lis
 
 
 def _fallback_high_risk_areas(findings: list[dict]) -> list[dict]:
-    counts = Counter((item.get("location") or item.get("site_name") or "Project-wide") for item in findings)
+    counts = Counter(_exact_location_label(item) for item in findings)
     return [
         {
             "area": str(area),
@@ -486,8 +487,8 @@ def _fallback_current_project_actions(findings: list[dict]) -> list[dict]:
     for item in ranked[:8]:
         rows.append(
             {
-                "issue": str(item.get("title") or "Current finding"),
-                "location": str(item.get("location") or item.get("site_name") or "Project-wide"),
+                "issue": str(item.get("display_title") or item.get("title") or "Current finding"),
+                "location": _exact_location_label(item),
                 "severity": _severity(item.get("severity")),
                 "trade": str(item.get("trade") or "General"),
                 "category": _insight_category(item),
@@ -542,15 +543,22 @@ def _fallback_historical_lessons(findings: list[dict]) -> list[dict]:
     return lessons
 
 
-def _suggested_questions(selected: str) -> list[str]:
-    suffix = "" if selected == "All" else f" for {selected}"
-    return [
-        f"What should we check before the next inspection{suffix}?",
-        "Which trades need the most attention this week?",
-        "What evidence should we prepare before reinspection?",
-        "Which old project lessons apply to a new project?",
-        "What are the highest-risk repeat failures?",
-    ]
+def _exact_location_label(item: dict) -> str:
+    for value in (item.get("location"), item.get("unit_label")):
+        if not value:
+            continue
+        label = str(value).strip()
+        if not label or re.fullmatch(r"\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?", label):
+            continue
+        return label
+    return "Exact location not stated"
+
+
+def _coerced_location_label(value: Any) -> str:
+    label = str(value or "").strip()
+    if not label or label.lower() == "project-wide" or re.fullmatch(r"\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?", label):
+        return "Exact location not stated"
+    return label
 
 
 def _group_by_title(findings: list[dict]) -> dict[str, list[dict]]:

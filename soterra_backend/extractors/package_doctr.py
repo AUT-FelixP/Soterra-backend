@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import os
 import re
 import tempfile
 from collections import Counter
@@ -15,6 +17,7 @@ from ..utils import parse_report_date, plus_days
 from .base import ExtractionArtifacts, ExtractionRequest
 
 _DOCTR_PREDICTOR = None
+logger = logging.getLogger("soterra_backend")
 
 ISSUE_HINTS = (
     "failed",
@@ -77,24 +80,68 @@ class DoctrRulesPresidioExtractor:
         self.use_demo_fallback = use_demo_fallback
 
     def extract(self, request: ExtractionRequest, pdf_path: Path) -> ExtractionArtifacts:
-        # Fast-path: many PDFs contain embedded text already. docTR OCR is expensive, so only
-        # run OCR when the embedded text is too sparse to be useful.
         embedded_text = extract_embedded_text(pdf_path)
+        embedded_text_length = len(embedded_text.strip())
         raw_text = embedded_text
-        if len(embedded_text.strip()) < 400:
-            try:
-                raw_text = _extract_text_with_doctr(pdf_path, max_pages=self.settings.package_max_pages)
-            except RuntimeError:
-                raw_text = embedded_text
+        ocr_enabled = _env_bool("SOTERRA_PACKAGE_OCR_ENABLED", getattr(self.settings, "package_ocr_enabled", False))
+        ocr_max_pages = _env_int(
+            "SOTERRA_PACKAGE_OCR_MAX_PAGES",
+            getattr(self.settings, "package_ocr_max_pages", self.settings.package_max_pages),
+        )
+        ocr_attempted = False
+        ocr_error: str | None = None
+        text_source = "embedded-text"
+
+        if embedded_text_length < 400:
+            text_source = "embedded-text-sparse-ocr-disabled"
+            if ocr_enabled:
+                ocr_attempted = True
+                text_source = "ocr"
+                try:
+                    raw_text = _extract_text_with_doctr(pdf_path, max_pages=ocr_max_pages)
+                except Exception as exc:
+                    ocr_error = f"{type(exc).__name__}: {exc}"
+                    raw_text = embedded_text
+                    text_source = "embedded-text-sparse-ocr-failed"
+                    logger.warning(
+                        "package_ocr_failed file=%s embedded_text_length=%d error=%s",
+                        request.filename,
+                        embedded_text_length,
+                        ocr_error,
+                    )
 
         extraction = _build_rule_extraction(request, raw_text)
         extraction = finalize_extraction(extraction, request.filename)
+        metadata = {
+            "text_source": text_source,
+            "embedded_text_length": embedded_text_length,
+            "ocr_enabled": ocr_enabled,
+            "ocr_attempted": ocr_attempted,
+            "ocr_error": ocr_error,
+            "raw_text_length": len(raw_text.strip()),
+            "finding_count": len(extraction.findings),
+        }
 
         return ExtractionArtifacts(
             extraction=extraction,
             raw_text=_redact_text(raw_text),
-            extractor_name=f"package:{self.settings.package_extractor}",
+            extractor_name=f"package:{self.settings.package_extractor}:{text_source}",
+            metadata=metadata,
         )
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return bool(default)
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        return int(default)
 
 
 def _extract_text_with_doctr(pdf_path: Path, *, max_pages: int = 12) -> str:
@@ -104,8 +151,9 @@ def _extract_text_with_doctr(pdf_path: Path, *, max_pages: int = 12) -> str:
         from doctr.io import DocumentFile
         from doctr.models import ocr_predictor
     except ModuleNotFoundError as exc:
+        missing = exc.name or "unknown"
         raise RuntimeError(
-            "python-doctr is not installed. Install the package dependencies before using SOTERRA_EXTRACTOR_MODE=package."
+            f"docTR OCR dependency is missing: {missing}. Install the package extra before using OCR."
         ) from exc
 
     if _DOCTR_PREDICTOR is None:

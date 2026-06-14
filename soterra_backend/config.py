@@ -50,10 +50,9 @@ def _default_local_data_dir(repo_root: Path) -> Path:
 
 
 def _default_process_inline() -> bool:
-    # Vercel serverless requests should complete the extraction before responding.
-    # FastAPI BackgroundTasks are not a durable job queue and can leave uploads stuck
-    # in "Extracting" when the request lifecycle ends before the background work finishes.
-    return bool(os.getenv("VERCEL"))
+    # FastAPI BackgroundTasks are not a durable extraction queue. Complete upload
+    # extraction before responding so failed files return a clear 422.
+    return True
 
 
 def _default_model_provider() -> str:
@@ -99,6 +98,7 @@ class Settings:
     model_extraction_temperature: float
     model_extraction_max_findings: int
     model_extraction_timeout_seconds: int
+    extraction_timeout_seconds: int
     model_extraction_retry_count: int
     model_extraction_models: list[ModelExtractionConfig]
     process_inline: bool
@@ -106,6 +106,8 @@ class Settings:
     local_db_path: Path
     local_storage_dir: Path
     package_max_pages: int
+    package_ocr_enabled: bool
+    package_ocr_max_pages: int
     supabase_url: str | None
     supabase_service_role_key: str | None
     supabase_bucket: str
@@ -187,6 +189,12 @@ class Settings:
             model_extraction_temperature=float(os.getenv("SOTERRA_MODEL_EXTRACTION_TEMPERATURE", "0.0")),
             model_extraction_max_findings=int(os.getenv("SOTERRA_MODEL_EXTRACTION_MAX_FINDINGS", "40")),
             model_extraction_timeout_seconds=int(os.getenv("SOTERRA_MODEL_EXTRACTION_TIMEOUT_SECONDS", "90")),
+            extraction_timeout_seconds=int(
+                os.getenv(
+                    "SOTERRA_EXTRACTION_TIMEOUT_SECONDS",
+                    os.getenv("SOTERRA_MODEL_EXTRACTION_TIMEOUT_SECONDS", "90"),
+                )
+            ),
             model_extraction_retry_count=int(os.getenv("SOTERRA_MODEL_EXTRACTION_RETRY_COUNT", "1")),
             model_extraction_models=extraction_models,
             process_inline=_to_bool(os.getenv("SOTERRA_PROCESS_INLINE"), _default_process_inline()),
@@ -204,6 +212,8 @@ class Settings:
                 )
             ),
             package_max_pages=int(os.getenv("SOTERRA_PACKAGE_MAX_PAGES", "12")),
+            package_ocr_enabled=_to_bool(os.getenv("SOTERRA_PACKAGE_OCR_ENABLED"), False),
+            package_ocr_max_pages=int(os.getenv("SOTERRA_PACKAGE_OCR_MAX_PAGES", os.getenv("SOTERRA_PACKAGE_MAX_PAGES", "12"))),
             supabase_url=supabase_url,
             supabase_service_role_key=supabase_service_role_key,
             supabase_bucket=os.getenv("SUPABASE_STORAGE_BUCKET", "inspection-reports"),

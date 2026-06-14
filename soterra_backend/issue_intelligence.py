@@ -40,6 +40,8 @@ ACTION_TERMS = (
 )
 
 STRONG_ACTION_TERMS = (
+    "fail",
+    "failed",
     "missing",
     "incomplete",
     "loose",
@@ -52,6 +54,7 @@ STRONG_ACTION_TERMS = (
     "below",
     "outstanding",
     "not installed",
+    "close-out",
     "flashing",
     "cavity",
     "membrane",
@@ -70,14 +73,69 @@ POSITIVE_OBSERVATIONS = (
     "installation looks okay",
 )
 
+NON_ACTIONABLE_PHRASES = (
+    "not applicable",
+    "refer items below",
+    "site meeting photos inspection",
+    "next inspection required site meeting photos",
+    "fail inspection outcome work completed in accordance",
+    "work completed in accordance with plans yes",
+    "work completed in accordance with plans: yes",
+    "building wrap: joinery tape flashings installed as per pass",
+    "pipe penetrations and installation pass",
+    "we conducted a site inspection",
+    "we note the following elements discussed on site",
+    "had been installed",
+    "after missing previously",
+    "numerous recurring issues with mechanical ducting and evidence of poor coordination",
+    "whilst products",
+    "products.tdy",
+    "drawingmaybea",
+)
+
+DEFECT_CUES = (
+    "fail",
+    "failed",
+    "missing",
+    "incomplete",
+    "loose",
+    "not compliant",
+    "non-compliant",
+    "defect",
+    "rectify",
+    "required",
+    "requires",
+    "outstanding",
+    "not installed",
+    "close-out",
+    "less than",
+    "below",
+    "query",
+    "to complete",
+    "needs",
+)
+
 TABLE_NOISE = (
     "figure ",
     "table ",
     "assessment summary",
     "refertotable",
     "products ltd",
+    "products.tdy",
     "legal proceedings",
     "termsa",
+    "drawingmaybea",
+    "whilst products",
+)
+
+POSITIVE_DEFECT_CUES = (
+    "defect will be remediated",
+    "defect was remediated",
+    "not compliant",
+    "non-compliant",
+    "missing",
+    "annular gap was less than 5mm",
+    "it was noted that annular gap was less than",
 )
 
 
@@ -115,6 +173,18 @@ def summarize_issue_title(text: str) -> str:
 
     if "close-out photos requested" in lowered:
         return "Close-out photos requested"
+    if "kitchen conduit" in lowered and "passive fire" in lowered:
+        return "Kitchen conduit passive fire close-out required"
+    if "passive fire in hwc cupboard" in lowered:
+        return "HWC cupboard passive fire close-out required"
+    if "ryanmesh" in lowered and "fire engineer" in lowered:
+        return "Ryanmesh fire separation detail requires confirmation"
+    if "failed cavity wrap inspection" in lowered or "full recheck for level 1" in lowered:
+        return "Failed level 1 cavity wrap junction details"
+    if "deck/balcony" in lowered and "fail" in lowered:
+        return "Failed deck/balcony flashing and threshold details"
+    if "flashings at junctions" in lowered and "fail" in lowered:
+        return "Failed flashings and cavity batten items"
     if "missing" in lowered and "close-out" in lowered and "photo" in lowered:
         return "Missing close-out photo"
     if "breakaway" in lowered and "damper" in lowered:
@@ -123,6 +193,22 @@ def summarize_issue_title(text: str) -> str:
         return "Missing plasterboard lining fixings"
     if "annular gap" in lowered and ("less than" in lowered or "below" in lowered):
         return "Pipe penetration annular gap below approved detail"
+    if "ducting and cabling too tight" in lowered:
+        return "Ducting and cabling too tight against framing"
+    if "flexi duct being compressed by hydraulics support" in lowered:
+        return "Flexi duct compressed by hydraulics support"
+    if "ducting hard pressed against frame" in lowered:
+        return "Ducting pressed against frame without clearance"
+    if "duct clashing with other services" in lowered:
+        return "Duct clash requires re-routing to grille"
+    if "duct is squeezed by pipework" in lowered:
+        return "Duct squeezed by pipework on level 2"
+    if "ductwork occurring" in lowered and "re-routed" in lowered:
+        return "Ductwork clash requires re-routing"
+    if "flexi duct is sitting" in lowered and "not suitable" in lowered:
+        return "Flexi duct support installation is not suitable"
+    if "sealing tape on ductwork loose" in lowered:
+        return "Loose sealing tape on ductwork"
     if "lift shaft" in lowered and "later stage" in lowered:
         return "Lift shaft penetration fire stopping pending inspection"
     if "lift door" in lowered and "gap" in lowered:
@@ -167,12 +253,15 @@ def plain_english_summary(finding: dict[str, Any]) -> str:
 
 def is_actionable_issue(finding: dict[str, Any]) -> tuple[bool, str | None]:
     text = _source_text(finding)
+    cleaned = _clean_text(text)
     lowered = text.lower()
     if _looks_like_table_or_drawing_noise(text):
         return False, "Looks like OCR/table/drawing noise rather than an inspection action."
-    if any(term in lowered for term in POSITIVE_OBSERVATIONS) and not any(term in lowered for term in ("defect", "less than", "not compliant", "missing", "remediated")):
+    if _looks_like_non_actionable_checklist_result(lowered):
+        return False, "Looks like a passed or not-applicable checklist row rather than an open issue."
+    if any(term in lowered for term in POSITIVE_OBSERVATIONS) and not any(term in lowered for term in POSITIVE_DEFECT_CUES):
         return False, "Looks like a positive observation rather than a defect."
-    if len(_clean_text(text)) < 28 and not any(term in lowered for term in ACTION_TERMS):
+    if len(cleaned) < 28 and not any(term in lowered for term in DEFECT_CUES):
         return False, "Too short to be a useful actionable issue."
     if any(term in lowered for term in ACTION_TERMS):
         return True, None
@@ -237,11 +326,14 @@ def _fallback_label(title: str) -> str:
 
 
 def _source_text(finding: dict[str, Any]) -> str:
+    title = str(finding.get("issue_title") or finding.get("title") or "").strip()
+    description = str(finding.get("description") or "").strip()
+    if description and (len(_clean_text(title)) < 28 or title.lower() in {"suitable", "photo", "photos"}):
+        return f"{title}. {description}" if title else description
     return str(
         finding.get("plain_english_summary")
-        or finding.get("issue_title")
-        or finding.get("title")
-        or finding.get("description")
+        or title
+        or description
         or ""
     )
 
@@ -263,6 +355,18 @@ def _looks_like_table_or_drawing_noise(text: str) -> bool:
     letters = re.sub(r"[^A-Za-z]+", "", cleaned)
     uppercase_ratio = sum(1 for ch in letters if ch.isupper()) / max(len(letters), 1)
     return uppercase_ratio > 0.75 and len(cleaned) < 90 and not any(term in lowered for term in ACTION_TERMS)
+
+
+def _looks_like_non_actionable_checklist_result(lowered: str) -> bool:
+    if any(phrase in lowered for phrase in NON_ACTIONABLE_PHRASES):
+        return True
+    if "inspection outcome" in lowered and "work completed in accordance" in lowered:
+        return True
+    has_pass = " pass" in f" {lowered} " or "( pass" in lowered
+    has_defect = any(term in lowered for term in DEFECT_CUES)
+    if has_pass and not has_defect:
+        return True
+    return False
 
 
 def _highest_severity(items: list[dict[str, Any]]) -> str:
