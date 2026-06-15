@@ -20,6 +20,10 @@ ACTION_TERMS = (
     "needs to",
     "less than",
     "below",
+    "exceeds",
+    "excessive",
+    "tolerance",
+    "reinstate",
     "outstanding",
     "not installed",
     "close-out",
@@ -52,6 +56,10 @@ STRONG_ACTION_TERMS = (
     "rectify",
     "less than",
     "below",
+    "exceeds",
+    "excessive",
+    "tolerance",
+    "reinstate",
     "outstanding",
     "not installed",
     "close-out",
@@ -136,6 +144,8 @@ POSITIVE_DEFECT_CUES = (
     "missing",
     "annular gap was less than 5mm",
     "it was noted that annular gap was less than",
+    "annular gap around",
+    "exceeds approved system tolerance",
 )
 
 
@@ -193,6 +203,8 @@ def summarize_issue_title(text: str) -> str:
         return "Missing plasterboard lining fixings"
     if "annular gap" in lowered and ("less than" in lowered or "below" in lowered):
         return "Pipe penetration annular gap below approved detail"
+    if "annular gap" in lowered and ("exceeds" in lowered or "excessive" in lowered or "tolerance" in lowered):
+        return "Fire-stopped penetration annular gap exceeds approved tolerance"
     if "ducting and cabling too tight" in lowered:
         return "Ducting and cabling too tight against framing"
     if "flexi duct being compressed by hydraulics support" in lowered:

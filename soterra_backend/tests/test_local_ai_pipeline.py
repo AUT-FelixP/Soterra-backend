@@ -168,6 +168,7 @@ class LocalAIPipelineTest(unittest.TestCase):
         payload["inspector"] = None
         payload["report_date"] = None
         payload["summary"] = None
+        payload["overall_outcome"] = "Reinspection required before close-out."
         extractor = OllamaModelExtractor(base_url="http://localhost:11434", model_id="qwen2.5:7b-instruct")
         parsed = ParsedDocument(full_text="failed fire collar", pages=[ParsedPage(page_number=1, text="failed fire collar")])
         with patch("soterra_backend.extractors.ollama_model.requests.post", return_value=FakeResponse(__import__("json").dumps(payload))):
@@ -175,7 +176,41 @@ class LocalAIPipelineTest(unittest.TestCase):
 
         self.assertEqual(extraction.inspector, "Unknown inspector")
         self.assertEqual(extraction.report_date, "Unknown")
+        self.assertEqual(extraction.overall_outcome, "Reviewing")
         self.assertTrue(extraction.summary)
+
+    def test_passed_items_are_removed_from_ollama_findings(self) -> None:
+        payload = _payload()
+        payload["findings"].append(
+            {
+                **payload["findings"][0],
+                "title": "Fire door signage and smoke seal complete",
+                "description": "PASSED - Fire door signage and smoke seal installation complete. No action required.",
+                "severity": "Low",
+                "source_quote": "PASSED - Fire door signage and smoke seal installation complete. No action required.",
+            }
+        )
+        extractor = OllamaModelExtractor(base_url="http://localhost:11434", model_id="qwen2.5:7b-instruct")
+        parsed = ParsedDocument(full_text="failed fire collar", pages=[ParsedPage(page_number=1, text="failed fire collar")])
+        with patch("soterra_backend.extractors.ollama_model.requests.post", return_value=FakeResponse(__import__("json").dumps(payload))):
+            extraction = extractor.extract(parsed_document=parsed, request=_request())
+
+        self.assertEqual(len(extraction.findings), 1)
+        self.assertEqual(extraction.findings[0].title, "Fire collar missing")
+
+    def test_general_category_is_inferred_for_construction_findings(self) -> None:
+        payload = _payload()
+        payload["findings"][0]["category"] = "General"
+        payload["findings"][0]["trade"] = "General"
+        payload["findings"][0]["title"] = "Annular gap around cable tray fire stopping exceeds approved tolerance"
+        payload["findings"][0]["description"] = "Remove incomplete sealant and reinstate the fire-rated system."
+        extractor = OllamaModelExtractor(base_url="http://localhost:11434", model_id="qwen2.5:7b-instruct")
+        parsed = ParsedDocument(full_text="annular gap exceeds tolerance", pages=[ParsedPage(page_number=1, text="annular gap exceeds tolerance")])
+        with patch("soterra_backend.extractors.ollama_model.requests.post", return_value=FakeResponse(__import__("json").dumps(payload))):
+            extraction = extractor.extract(parsed_document=parsed, request=_request())
+
+        self.assertEqual(extraction.findings[0].category, "Passive Fire - Penetrations")
+        self.assertEqual(extraction.findings[0].trade, "Passive Fire")
 
     def test_ollama_cloud_api_key_is_sent_as_bearer_header(self) -> None:
         calls = []

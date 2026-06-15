@@ -155,9 +155,14 @@ def _normalize_payload(payload: dict, *, request: ExtractionRequest) -> dict:
         normalized.get("summary"),
         "Structured extraction completed from the provided inspection document.",
     )
-    normalized["overall_outcome"] = normalized.get("overall_outcome") or "Reviewing"
+    normalized["overall_outcome"] = _report_status_or_default(normalized.get("overall_outcome"))
     normalized["units"] = normalized.get("units") if isinstance(normalized.get("units"), list) else []
-    normalized["findings"] = normalized.get("findings") if isinstance(normalized.get("findings"), list) else []
+    findings = normalized.get("findings") if isinstance(normalized.get("findings"), list) else []
+    normalized["findings"] = [
+        _normalize_finding_payload(finding)
+        for finding in findings
+        if isinstance(finding, dict) and not _is_passed_finding(finding)
+    ]
     normalized["predicted_inspections"] = (
         normalized.get("predicted_inspections") if isinstance(normalized.get("predicted_inspections"), list) else []
     )
@@ -168,6 +173,68 @@ def _string_or_default(value: object, default: str) -> str:
     if isinstance(value, str) and value.strip():
         return value.strip()
     return default
+
+
+def _report_status_or_default(value: object) -> str:
+    if value in {"Reviewing", "Completed", "In progress"}:
+        return str(value)
+    text = str(value or "").strip().lower()
+    if any(token in text for token in ("complete", "closed", "passed", "no action")):
+        return "Completed"
+    if any(token in text for token in ("progress", "processing")):
+        return "In progress"
+    return "Reviewing"
+
+
+def _is_passed_finding(finding: dict) -> bool:
+    text = " ".join(
+        str(finding.get(key) or "")
+        for key in ("title", "description", "source_quote", "required_fix")
+    ).lower()
+    pass_markers = (
+        "passed",
+        "pass -",
+        "no action required",
+        "complete. no action",
+        "installation complete",
+        "compliant - no",
+    )
+    return any(marker in text for marker in pass_markers)
+
+
+def _normalize_finding_payload(finding: dict) -> dict:
+    normalized = dict(finding)
+    text = " ".join(
+        str(normalized.get(key) or "")
+        for key in ("title", "description", "category", "trade", "root_cause", "source_quote")
+    ).lower()
+    if not str(normalized.get("category") or "").strip() or str(normalized.get("category")).strip() == "General":
+        normalized["category"] = _infer_category(text)
+    if not str(normalized.get("trade") or "").strip() or str(normalized.get("trade")).strip() == "General":
+        normalized["trade"] = _infer_trade(text)
+    return normalized
+
+
+def _infer_category(text: str) -> str:
+    if "damper" in text or "breakaway" in text:
+        return "Passive Fire - Dampers"
+    if "penetration" in text or "collar" in text or "sealant" in text or "annular gap" in text or "fire stopping" in text:
+        return "Passive Fire - Penetrations"
+    if "plasterboard" in text or "bulkhead" in text:
+        return "Passive Fire - Linings"
+    if "flashing" in text or "membrane" in text or "threshold" in text:
+        return "Envelope"
+    return "General"
+
+
+def _infer_trade(text: str) -> str:
+    if "fire" in text or "damper" in text or "penetration" in text or "collar" in text:
+        return "Passive Fire"
+    if "duct" in text or "mechanical" in text:
+        return "Mechanical"
+    if "flashing" in text or "membrane" in text:
+        return "Envelope"
+    return "General"
 
 
 def _loads_json_object(text: str) -> dict:
