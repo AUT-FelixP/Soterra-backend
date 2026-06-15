@@ -10,7 +10,7 @@ from typing import Any
 from .prompts import SOTERRA_AGENT_SYSTEM_PROMPT
 from .schemas import AgentChatResponse, AgentRelatedEntities
 from .tools import build_soterra_tools
-from ..config import DEFAULT_AGENT_PROVIDER, DEFAULT_MODEL_ID
+from ..config import DEFAULT_AGENT_PROVIDER, DEFAULT_LOCAL_MODEL_ID, DEFAULT_MODEL_ID
 from ..repository import RepositoryBackend
 from ..services.work_package_service import build_chat_cards, build_todays_fix_list, build_work_packages
 from ..utils import safe_int
@@ -66,12 +66,13 @@ class SoterraAgentService:
     def __init__(self, repository: RepositoryBackend) -> None:
         self.repository = repository
         self._native_service = None
+        self._local_ollama_service = None
 
     def status(self) -> dict:
         enabled = os.getenv("SOTERRA_AGENT_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
         provider = os.getenv("SOTERRA_AGENT_PROVIDER", _default_agent_provider()).strip().lower()
         model_id = self._default_model_id(provider)
-        configured = provider == "native"
+        configured = provider in {"native", "ollama", "local", "local_ollama"}
         if provider in {"huggingface", "hf_inference", "huggingface_inference"}:
             configured = bool(os.getenv("HF_TOKEN"))
         return {
@@ -79,7 +80,7 @@ class SoterraAgentService:
             "configured": configured,
             "provider": provider,
             "model_id": model_id,
-            "mode": "deterministic" if provider == "native" else "model",
+            "mode": "deterministic" if provider == "native" else ("local_model" if provider in {"ollama", "local", "local_ollama"} else "model"),
         }
 
     def chat(
@@ -98,6 +99,18 @@ class SoterraAgentService:
         self._ensure_enabled()
         if self._provider() == "native":
             return self._native().chat(
+                message=message,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                role=role,
+                session_id=session_id,
+                report_id=report_id,
+                issue_id=issue_id,
+                project_slug=project_slug,
+                page_context=page_context,
+            )
+        if self._provider() in {"ollama", "local", "local_ollama"}:
+            return self._local_ollama().chat(
                 message=message,
                 tenant_id=tenant_id,
                 user_id=user_id,
@@ -213,6 +226,8 @@ class SoterraAgentService:
     def list_sessions(self, *, tenant_id: str, user_id: str) -> list[dict]:
         if self._provider() == "native":
             return self._native().list_sessions(tenant_id=tenant_id, user_id=user_id)
+        if self._provider() in {"ollama", "local", "local_ollama"}:
+            return self._local_ollama().list_sessions(tenant_id=tenant_id, user_id=user_id)
         return [
             {"id": item.id, "title": item.title, "created_at": item.created_at, "updated_at": item.updated_at}
             for item in self.repository.list_agent_chat_sessions(tenant_id=tenant_id, user_id=user_id)
@@ -221,6 +236,8 @@ class SoterraAgentService:
     def get_session(self, *, tenant_id: str, user_id: str, session_id: str) -> dict | None:
         if self._provider() == "native":
             return self._native().get_session(tenant_id=tenant_id, user_id=user_id, session_id=session_id)
+        if self._provider() in {"ollama", "local", "local_ollama"}:
+            return self._local_ollama().get_session(tenant_id=tenant_id, user_id=user_id, session_id=session_id)
         session = self.repository.get_agent_chat_session(tenant_id=tenant_id, user_id=user_id, session_id=session_id)
         if not session:
             return None
@@ -239,6 +256,8 @@ class SoterraAgentService:
     def delete_session(self, *, tenant_id: str, user_id: str, session_id: str) -> bool:
         if self._provider() == "native":
             return self._native().delete_session(tenant_id=tenant_id, user_id=user_id, session_id=session_id)
+        if self._provider() in {"ollama", "local", "local_ollama"}:
+            return self._local_ollama().delete_session(tenant_id=tenant_id, user_id=user_id, session_id=session_id)
         return self.repository.soft_delete_agent_chat_session(tenant_id=tenant_id, user_id=user_id, session_id=session_id)
 
     def _ensure_enabled(self) -> None:
@@ -255,6 +274,13 @@ class SoterraAgentService:
 
             self._native_service = NativeAgentService(self.repository)
         return self._native_service
+
+    def _local_ollama(self):
+        if self._local_ollama_service is None:
+            from .local_agent import LocalOllamaAgentService
+
+            self._local_ollama_service = LocalOllamaAgentService(self.repository)
+        return self._local_ollama_service
 
     def _get_or_create_session(self, *, tenant_id: str, user_id: str, session_id: str | None, message: str):
         if session_id:
@@ -344,7 +370,7 @@ class SoterraAgentService:
                 temperature=temperature,
             )
 
-        raise AgentConfigurationError("Unsupported Soterra agent model provider. Use SOTERRA_AGENT_PROVIDER=native or huggingface.")
+        raise AgentConfigurationError("Unsupported Soterra agent model provider. Use SOTERRA_AGENT_PROVIDER=native, ollama, or huggingface.")
 
     def _default_model_id(self, provider: str) -> str:
         configured = os.getenv("SOTERRA_AGENT_MODEL_ID")
@@ -352,6 +378,8 @@ class SoterraAgentService:
             return configured
         if provider == "native":
             return None  # type: ignore[return-value]
+        if provider in {"ollama", "local", "local_ollama"}:
+            return os.getenv("SOTERRA_EXTRACTION_MODEL_ID", DEFAULT_LOCAL_MODEL_ID)
         if provider in {"huggingface", "hf_inference", "huggingface_inference"}:
             return DEFAULT_MODEL_ID
         return DEFAULT_MODEL_ID

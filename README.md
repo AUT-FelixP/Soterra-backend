@@ -20,7 +20,16 @@ FastAPI backend for report ingestion, extraction, analytics, and persistence.
 
 ## Required environment variables
 
-- `SOTERRA_EXTRACTOR_MODE=model`
+- `SOTERRA_EXTRACTOR_MODE=local_ai` for the free local Docling/Ollama pipeline, or `package` for the legacy package extractor.
+- `SOTERRA_AGENT_ENABLED=true`
+- `SOTERRA_REPOSITORY_MODE`
+- `SOTERRA_STORAGE_MODE`
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `SUPABASE_STORAGE_BUCKET`
+
+Legacy hosted model variables, only if you intentionally use `SOTERRA_EXTRACTOR_MODE=model` or `SOTERRA_AGENT_PROVIDER=huggingface`:
+
 - `HF_TOKEN=...`
 - `SOTERRA_DOCUMENT_PARSE_PROVIDER=huggingface`
 - `SOTERRA_DOCUMENT_PARSE_MODEL_ID=HuggingFaceTB/SmolVLM-256M-Instruct`
@@ -28,17 +37,77 @@ FastAPI backend for report ingestion, extraction, analytics, and persistence.
 - `SOTERRA_EXTRACTION_PROVIDER=huggingface`
 - `SOTERRA_EXTRACTION_MODEL_ID=HuggingFaceTB/SmolLM2-1.7B-Instruct`
 - `SOTERRA_EXTRACTION_MODELS_JSON` optional list of provider/model configs for model comparison before fallback
-- `SOTERRA_AGENT_ENABLED=true`
 - `SOTERRA_AGENT_PROVIDER=huggingface`
 - `SOTERRA_AGENT_MODEL_ID=HuggingFaceTB/SmolLM2-1.7B-Instruct`
-- `SOTERRA_REPOSITORY_MODE`
-- `SOTERRA_STORAGE_MODE`
-- `SUPABASE_URL`
-- `SUPABASE_SERVICE_ROLE_KEY`
-- `SUPABASE_STORAGE_BUCKET`
 
 Optional fallback/dev variable:
 - `SOTERRA_PACKAGE_EXTRACTOR=doctr_rules_presidio` only if you intentionally install package OCR extras for fallback testing
+
+## Free local extraction setup
+
+Install the local extraction extras:
+
+```bash
+python -m pip install -e ".[local-ai]"
+```
+
+### Ollama cloud mode
+
+Use this when you do not want to download model weights locally. Ollama's cloud API uses the same `/api/chat` contract as local Ollama, with bearer-token authentication.
+
+```bash
+SOTERRA_EXTRACTOR_MODE=local_ai
+SOTERRA_DOCUMENT_PARSE_PROVIDER=docling
+SOTERRA_EXTRACTION_PROVIDER=ollama
+SOTERRA_EXTRACTION_MODEL_ID=gpt-oss:20b
+SOTERRA_OLLAMA_BASE_URL=https://ollama.com
+SOTERRA_OLLAMA_API_KEY=your_ollama_api_key
+SOTERRA_PADDLE_OCR_ENABLED=false
+SOTERRA_LOCAL_AI_FALLBACK_TO_PACKAGE=true
+SOTERRA_AGENT_PROVIDER=ollama
+SOTERRA_AGENT_MODEL_ID=gpt-oss:20b
+```
+
+You can swap `SOTERRA_EXTRACTION_MODEL_ID` and `SOTERRA_AGENT_MODEL_ID` without code changes.
+
+### Local Ollama mode
+
+Install Ollama from [ollama.com](https://ollama.com), then pull the default extraction model:
+
+```bash
+ollama pull qwen2.5:7b-instruct
+```
+
+Recommended local environment:
+
+```bash
+SOTERRA_EXTRACTOR_MODE=local_ai
+SOTERRA_DOCUMENT_PARSE_PROVIDER=docling
+SOTERRA_EXTRACTION_PROVIDER=ollama
+SOTERRA_EXTRACTION_MODEL_ID=qwen2.5:7b-instruct
+SOTERRA_OLLAMA_BASE_URL=http://localhost:11434
+SOTERRA_PADDLE_OCR_ENABLED=false
+SOTERRA_LOCAL_AI_FALLBACK_TO_PACKAGE=true
+SOTERRA_AGENT_PROVIDER=ollama
+SOTERRA_AGENT_MODEL_ID=qwen2.5:7b-instruct
+```
+
+For low-memory machines:
+
+```bash
+SOTERRA_EXTRACTION_MODEL_ID=qwen2.5:3b-instruct
+SOTERRA_AGENT_MODEL_ID=qwen2.5:3b-instruct
+```
+
+Notes:
+
+- Docling parses PDFs and Word documents locally, including layout and tables where available.
+- PyMuPDF embedded text is used for normal PDFs when it is strong enough.
+- PaddleOCR can be enabled for scanned PDFs with `SOTERRA_PADDLE_OCR_ENABLED=true`, but it may be slower.
+- For local Ollama mode, Ollama must be running before uploading documents.
+- For Ollama cloud mode, the backend needs outbound HTTPS access and `SOTERRA_OLLAMA_API_KEY`.
+- Extraction quality depends on the selected model and parser output.
+- Do not commit `.env` secrets. Keep Supabase repository/storage settings unchanged and rotate exposed service role keys outside this code change.
 
 ## Apply Supabase database migrations
 

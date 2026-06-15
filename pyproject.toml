@@ -33,6 +33,13 @@ model = [
   "huggingface_hub>=0.36,<1",
   "smolagents[litellm]>=1.18,<2",
 ]
+local-ai = [
+  "docling",
+  "paddleocr",
+  "PyMuPDF>=1.26,<2",
+  "pdfplumber",
+  "requests>=2.32,<3",
+]
 [project.scripts]
 app = "soterra_backend.api:app"
 
