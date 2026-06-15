@@ -406,6 +406,21 @@ class LocalAgentTest(unittest.TestCase):
         self.assertEqual(repo.tenant_id, "ten-1")
         self.assertTrue(repo.memory)
 
+    def test_agent_replaces_weak_open_issue_answer_with_action_plan(self) -> None:
+        def fake_generate(self, *, system_prompt: str, user_prompt: str, timeout_seconds=None):
+            return "**Issue Summary:** There are open issues.\n\n**Next Action:** Address each issue according to the summary."
+
+        repo = FakeAgentRepository()
+        service = LocalOllamaAgentService(repo)
+        with patch.object(OllamaModelExtractor, "generate_text", fake_generate):
+            response = service.chat(tenant_id="ten-1", user_id="usr-1", role="member", message="What open issues need fixing?")
+
+        self.assertIn("Open issues: 1", response.answer)
+        self.assertIn("Severity: High", response.answer)
+        self.assertIn("Location: Riser", response.answer)
+        self.assertIn("Evidence: after photos", response.answer)
+        self.assertNotIn("**", response.answer)
+
 
 if __name__ == "__main__":
     unittest.main()
