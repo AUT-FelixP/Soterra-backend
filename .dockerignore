@@ -1,0 +1,10 @@
+.env
+.venv
+__pycache__
+*.pyc
+.idea
+artifacts
+notebooks
+uv.lock
+.git
+.gitignore
