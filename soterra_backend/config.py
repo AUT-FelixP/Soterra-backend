@@ -51,8 +51,12 @@ def _default_local_data_dir(repo_root: Path) -> Path:
 
 
 def _default_process_inline() -> bool:
-    # FastAPI BackgroundTasks are not a durable extraction queue. Complete upload
-    # extraction before responding so failed files return a clear 422.
+    # Vercel requests should return after the placeholder report is saved; the
+    # extraction task can finish after the response so upload modals do not hang.
+    if os.getenv("VERCEL"):
+        return False
+    # Local and serverful deployments default to inline extraction so failed
+    # files return a clear 422 unless explicitly configured otherwise.
     return True
 
 
@@ -108,6 +112,8 @@ class Settings:
     model_extraction_timeout_seconds: int
     extraction_timeout_seconds: int
     model_extraction_retry_count: int
+    ollama_text_image_max_pages: int
+    ollama_text_image_dpi: int
     model_extraction_models: list[ModelExtractionConfig]
     process_inline: bool
     local_data_dir: Path
@@ -220,6 +226,8 @@ class Settings:
                 )
             ),
             model_extraction_retry_count=int(os.getenv("SOTERRA_MODEL_EXTRACTION_RETRY_COUNT", "1")),
+            ollama_text_image_max_pages=int(os.getenv("SOTERRA_OLLAMA_TEXT_IMAGE_MAX_PAGES", "3")),
+            ollama_text_image_dpi=int(os.getenv("SOTERRA_OLLAMA_TEXT_IMAGE_DPI", "90")),
             model_extraction_models=extraction_models,
             process_inline=_to_bool(os.getenv("SOTERRA_PROCESS_INLINE"), _default_process_inline()),
             local_data_dir=local_data_dir,

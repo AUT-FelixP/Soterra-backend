@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from fastapi import HTTPException, UploadFile
+from fastapi import BackgroundTasks, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
 from ..config import Settings
@@ -240,6 +240,12 @@ class ReportIngestionService:
 
         return report
 
+    def finish_ingest_safely(self, start: IngestionStart, upload: UploadContext) -> None:
+        try:
+            self.finish_ingest(start, upload)
+        except Exception:
+            logger.exception("background_ingest_failed report_id=%s", start.document_id)
+
     def _extract_with_timeout(
             self,
             upload: UploadContext,
@@ -321,6 +327,7 @@ class ReportUploadService:
         project: str,
         site: str,
         trade: str,
+        background_tasks: BackgroundTasks | None = None,
     ) -> JSONResponse:
         if not self.repository.consume_upload_rate_limit(
             tenant_id=tenant_id,
@@ -335,6 +342,7 @@ class ReportUploadService:
             project=project,
             site=site,
             trade=trade,
+            background_tasks=background_tasks,
         )
         status_code = payload.pop("_status_code")
         payload.pop("_bytes", None)
@@ -348,6 +356,7 @@ class ReportUploadService:
         project: str,
         site: str,
         trade: str,
+        background_tasks: BackgroundTasks | None = None,
     ) -> JSONResponse:
         if len(files) > self.settings.max_bulk_file_count:
             raise HTTPException(status_code=413, detail=f"You can upload up to {self.settings.max_bulk_file_count} files at once.")
@@ -369,6 +378,7 @@ class ReportUploadService:
                     project=project,
                     site=site,
                     trade=trade,
+                    background_tasks=background_tasks,
                     consume_rate_limit=False,
                 )
                 total_bytes += int(payload.pop("_bytes", 0))
@@ -399,6 +409,7 @@ class ReportUploadService:
         project: str,
         site: str,
         trade: str,
+        background_tasks: BackgroundTasks | None = None,
         consume_rate_limit: bool = False,
     ) -> dict:
         if consume_rate_limit and not self.repository.consume_upload_rate_limit(
@@ -466,6 +477,15 @@ class ReportUploadService:
             raise HTTPException(status_code=409, detail="This file has already been uploaded.")
 
         assert start is not None
+        if not self.settings.process_inline:
+            if background_tasks is None:
+                raise HTTPException(status_code=503, detail="Background processing is not available for this upload.")
+            background_tasks.add_task(self.ingestion_service.finish_ingest_safely, start, upload_ctx)
+            report = self.repository.get_report(tenant_id, start.document_id)
+            if not report:
+                raise RuntimeError("The report was queued but could not be loaded back from the repository.")
+            return {"item": report, "isDuplicate": False, "isProcessing": True, "_status_code": 202, "_bytes": len(content)}
+
         try:
             report = self.ingestion_service.finish_ingest(start, upload_ctx)
         except ExtractionQualityError as exc:

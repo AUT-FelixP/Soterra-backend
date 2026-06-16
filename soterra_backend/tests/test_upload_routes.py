@@ -132,9 +132,9 @@ class UploadAndRoutesTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_upload_dedup_and_views(self) -> None:
         status_code, payload = await self._upload_once()
-        self.assertEqual(status_code, 201, payload)
+        self.assertEqual(status_code, 202, payload)
         self.assertIs(payload.get("isDuplicate"), False)
-        self.assertIs(payload.get("isProcessing"), False)
+        self.assertIs(payload.get("isProcessing"), True)
         self.assertIn("item", payload)
         report = payload["item"]
         report_id = report["id"]

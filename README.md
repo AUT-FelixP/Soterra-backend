@@ -55,9 +55,12 @@ SOTERRA_EXTRACTION_VISION_MODEL_ID=minimax-m3
 SOTERRA_OLLAMA_BASE_URL=https://ollama.com
 SOTERRA_OLLAMA_API_KEY=<secret>
 SOTERRA_PADDLE_OCR_ENABLED=false
+SOTERRA_PROCESS_INLINE=false
+SOTERRA_OLLAMA_TEXT_IMAGE_MAX_PAGES=3
+SOTERRA_OLLAMA_TEXT_IMAGE_DPI=90
 ```
 
-The backend needs outbound HTTPS access to `SOTERRA_OLLAMA_BASE_URL`. `SOTERRA_EXTRACTION_VISION_MODEL_ID` is used only when a PDF has no embedded text and the backend must send rendered page images to Ollama.
+The backend needs outbound HTTPS access to `SOTERRA_OLLAMA_BASE_URL`. `SOTERRA_PROCESS_INLINE=false` returns the upload response after the placeholder report is saved, then completes extraction in the background so the UI can close quickly. `SOTERRA_EXTRACTION_VISION_MODEL_ID` is used only when a PDF has no embedded text and the backend must send rendered page images to Ollama. Lower `SOTERRA_OLLAMA_TEXT_IMAGE_MAX_PAGES` and `SOTERRA_OLLAMA_TEXT_IMAGE_DPI` values make scanned PDFs process faster; increase them if extraction needs more page coverage.
 
 ## Free local extraction setup
 

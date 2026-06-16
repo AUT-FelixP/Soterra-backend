@@ -58,7 +58,14 @@ class OllamaTextExtractor:
                 raise RuntimeError("ollama_text extraction could not read embedded document text.")
             page_images = render_page_images_for_ollama(
                 pdf_path,
-                max_pages=max(1, min(self.settings.document_parse_max_pages, 8)),
+                max_pages=max(
+                    1,
+                    min(
+                        self.settings.document_parse_max_pages,
+                        self.settings.ollama_text_image_max_pages,
+                    ),
+                ),
+                dpi=max(60, min(self.settings.ollama_text_image_dpi, 150)),
             )
             if not page_images:
                 raise RuntimeError("ollama_text extraction could not read document text or render page images.")
