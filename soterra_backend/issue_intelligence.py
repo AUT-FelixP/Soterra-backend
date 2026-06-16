@@ -181,6 +181,23 @@ def summarize_issue_title(text: str) -> str:
     cleaned = _clean_text(text)
     lowered = cleaned.lower()
 
+    if "building wrap meets junctions" in lowered or "flashings at junctions" in lowered:
+        return "Junction flashings failed inspection"
+    if (
+        "flashings above, below and at the sides" in lowered
+        or ("head" in lowered and "sill" in lowered and "jamb" in lowered and "wanz" in lowered)
+    ):
+        return "Window and door flashings/support bars failed"
+    if "cavity battens behind the cladding" in lowered or "cavity battens" in lowered:
+        return "Cavity battens do not match consented plans"
+    if "saddle flashings where decks" in lowered or "saddle flashing" in lowered:
+        return "Deck/balcony saddle flashings failed inspection"
+    if "height difference between the deck" in lowered or "threshold step-down" in lowered or "threshold step down" in lowered:
+        return "Deck/balcony threshold step-down failed inspection"
+    if "waterproof membrane at the deck" in lowered or "membrane upstand" in lowered:
+        return "Deck/balcony membrane upstand is too low"
+    if "timber-to-concrete" in lowered or "timber to concrete" in lowered:
+        return "Timber-to-concrete junction needs flashing protection"
     if "close-out photos requested" in lowered:
         return "Close-out photos requested"
     if "kitchen conduit" in lowered and "passive fire" in lowered:
@@ -257,10 +274,31 @@ def categorize_issue(finding: dict[str, Any]) -> str:
 def plain_english_summary(finding: dict[str, Any]) -> str:
     title = summarize_issue_title(_source_text(finding))
     location = finding.get("location") or finding.get("unit_label")
-    fix = finding.get("required_fix") or "Assign an owner, complete the fix, and upload close-out evidence."
+    fix = _specific_required_fix(title, finding.get("required_fix"))
     if location:
         return f"{title} at {location}. {fix}"
     return f"{title}. Exact project location was not stated in the report. {fix}"
+
+
+def _specific_required_fix(title: str, extracted_fix: Any) -> str:
+    if isinstance(extracted_fix, str) and extracted_fix.strip():
+        return extracted_fix.strip()
+    lowered = title.lower()
+    if "junction flashings" in lowered:
+        return "Redo the junction flashings to the approved building-wrap details and provide close-out photos for council review."
+    if "window and door flashings" in lowered:
+        return "Install head, sill and jamb flashings plus WANZ support bars to the approved details before cavity closure."
+    if "cavity battens" in lowered:
+        return "Reinstall cavity battens to the consented size, spacing, treatment and fixing requirements."
+    if "saddle flashings" in lowered:
+        return "Install compliant saddle flashings at deck and balcony wall junctions, then request reinspection."
+    if "threshold step-down" in lowered:
+        return "Adjust the deck or balcony threshold step-down to match the consented detail and document the measurement."
+    if "membrane upstand" in lowered:
+        return "Extend the waterproof membrane upstand to the required height and photograph it with a tape measure."
+    if "timber-to-concrete" in lowered:
+        return "Add the required flashing protection to exposed timber-to-concrete junctions before reinspection."
+    return "Assign an owner, complete the fix, and upload close-out evidence."
 
 
 def is_actionable_issue(finding: dict[str, Any]) -> tuple[bool, str | None]:

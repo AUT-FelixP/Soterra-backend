@@ -145,6 +145,39 @@ class NativeExtractionQualityTest(unittest.TestCase):
         self.assertTrue(enriched["is_actionable"])
         self.assertEqual(enriched["display_title"], "Duct squeezed by pipework on level 2")
 
+    def test_council_truncated_titles_get_complete_display_labels(self) -> None:
+        examples = [
+            (
+                "The flashing work where the building wrap meets junctions did not meet the council's requirements and must be redone or",
+                "Junction flashings failed inspection",
+            ),
+            (
+                "The cavity battens behind the cladding are not installed correctly or do not match the consented plans, so the drained c",
+                "Cavity battens do not match consented plans",
+            ),
+            (
+                "The height difference between the deck/balcony and the door threshold does not match the plan, so water can be driven in",
+                "Deck/balcony threshold step-down failed inspection",
+            ),
+        ]
+
+        for title, expected in examples:
+            with self.subTest(title=title):
+                enriched = enrich_finding(
+                    {
+                        "title": title,
+                        "description": title,
+                        "category": "Envelope",
+                        "trade": "Envelope",
+                        "severity": "High",
+                        "status": "Open",
+                    }
+                )
+
+                self.assertTrue(enriched["is_actionable"])
+                self.assertEqual(enriched["display_title"], expected)
+                self.assertNotRegex(enriched["plain_english_summary"], r"\b(or|c|in) at ")
+
     def test_package_extractor_does_not_run_ocr_when_disabled(self) -> None:
         extractor = DoctrRulesPresidioExtractor(replace(_settings(), package_ocr_enabled=False))
         with patch.dict("os.environ", {"SOTERRA_PACKAGE_OCR_ENABLED": "false"}, clear=False), \
