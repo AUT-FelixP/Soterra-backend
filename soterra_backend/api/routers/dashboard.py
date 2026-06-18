@@ -42,11 +42,22 @@ def dashboard_performance(
 
 @router.get("/dashboard/insights")
 def dashboard_insights(
-    inspectionType: str = "All inspection types",
+    project: str = "All projects",
+    site: str = "All sites",
+    inspection_type: str = "All inspection types",
+    trade: str = "All trades",
+    severity: str = "All severities",
+    status: str = "All statuses",
+    date_range: str = "All time",
+    inspectionType: str | None = None,
     context: AuthContext = Depends(get_auth_context),
     service: DashboardService = Depends(get_dashboard_service),
 ) -> dict:
-    return service.insights(tenant_id=context.tenant_id, inspection_type=inspectionType)
+    return service.insights(
+        tenant_id=context.tenant_id, project=project, site=site,
+        inspection_type=inspectionType or inspection_type, trade=trade,
+        severity=severity, status=status, date_range=date_range,
+    )
 
 
 @router.get("/dashboard/insights/ai")

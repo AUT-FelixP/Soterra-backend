@@ -32,8 +32,14 @@ class DashboardService:
     def performance(self, *, tenant_id: str, inspection_type: str) -> dict:
         return build_performance_page(self.repository.load_snapshot(tenant_id), inspection_type)
 
-    def insights(self, *, tenant_id: str, inspection_type: str) -> dict:
-        return build_insights_page(self.repository.load_snapshot(tenant_id), inspection_type)
+    def insights(
+        self, *, tenant_id: str, inspection_type: str = "All inspection types",
+        project: str = "All projects", site: str = "All sites", trade: str = "All trades",
+        severity: str = "All severities", status: str = "All statuses", date_range: str = "All time",
+    ) -> dict:
+        return build_insights_page(
+            self.repository.load_snapshot(tenant_id), inspection_type, project, site, trade, severity, status, date_range
+        )
 
     def legacy_insights_summary(self, *, tenant_id: str) -> dict:
         return build_legacy_insights_summary(self.repository.load_snapshot(tenant_id))

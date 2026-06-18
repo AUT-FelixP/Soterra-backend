@@ -180,6 +180,37 @@ class InsightsAnalyticsTest(unittest.TestCase):
         self.assertTrue(payload["lessonsFromPastProjects"])
         self.assertEqual(payload["export"]["fileName"], "inspection-insights-report.json")
 
+    def test_dashboard_filters_and_visual_payload_are_available(self) -> None:
+        payload = build_insights_page(
+            _snapshot(), project="Rimu Townhouses", severity="Critical"
+        )
+
+        self.assertEqual(payload["selectedFilters"]["project"], "Rimu Townhouses")
+        self.assertEqual(payload["kpis"][1]["value"], 1)
+        self.assertEqual(payload["visuals"]["severityDonut"], [{"name": "Critical", "value": 1}])
+        self.assertEqual(payload["issueDrilldown"][0]["id"], "iss-3")
+        self.assertIn("All projects", payload["filters"]["projects"])
+
+    def test_risk_and_quality_payloads_are_deterministic(self) -> None:
+        payload = build_insights_page(_snapshot())
+        repeated = next(row for row in payload["riskMatrix"] if row["issue"] == "Missing close-out photo")
+
+        self.assertEqual(repeated["repeatCount"], 2)
+        self.assertEqual(repeated["openCount"], 2)
+        self.assertGreater(repeated["riskScore"], 0)
+        self.assertEqual(payload["dataQuality"]["totalRows"], 4)
+        self.assertIn(payload["dataQuality"]["health"], {"Good", "Needs review"})
+
+    def test_open_issue_metrics_only_count_open_status(self) -> None:
+        snapshot = _snapshot()
+        snapshot.findings[0]["status"] = "In Progress"
+        payload = build_insights_page(snapshot)
+
+        open_kpi = next(item for item in payload["kpis"] if item["key"] == "open")
+        repeated = next(row for row in payload["riskMatrix"] if row["issue"] == "Missing close-out photo")
+        self.assertEqual(open_kpi["value"], 3)
+        self.assertEqual(repeated["openCount"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

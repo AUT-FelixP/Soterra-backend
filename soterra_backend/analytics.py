@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 import re
 from statistics import mean
 
@@ -176,11 +176,120 @@ def build_performance_page(snapshot: RepositorySnapshot, inspection_type: str = 
     }
 
 
-def build_insights_page(snapshot: RepositorySnapshot, inspection_type: str = "All inspection types") -> dict:
-    all_findings = _display_findings(snapshot.findings)
-    findings = _filter_findings_by_type(
+def _apply_insights_filters(
+    findings: list[dict],
+    *,
+    project: str = "All projects",
+    site: str = "All sites",
+    inspection_type: str = "All inspection types",
+    trade: str = "All trades",
+    severity: str = "All severities",
+    status: str = "All statuses",
+    date_range: str = "All time",
+) -> list[dict]:
+    """Apply the dashboard dropdowns to already tenant-scoped findings."""
+    selected = findings
+    filters = (
+        (project, "All projects", "project_name"),
+        (site, "All sites", "site_name"),
+        (inspection_type, "All inspection types", "inspection_type"),
+        (trade, "All trades", "trade"),
+        (severity, "All severities", "severity"),
+        (status, "All statuses", "status"),
+    )
+    for value, default, field in filters:
+        if value and value != default:
+            selected = [item for item in selected if item.get(field) == value]
+
+    if date_range in {"7d", "30d", "90d"}:
+        cutoff = datetime.now(tz=UTC) - timedelta(days=int(date_range[:-1]))
+        selected = [item for item in selected if _insights_datetime(item.get("created_at")) >= cutoff]
+    return selected
+
+
+def _insights_datetime(value: object) -> datetime:
+    if not value:
+        return datetime.min.replace(tzinfo=UTC)
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+
+
+def _chart_rows(findings: list[dict], key_fn, *, limit: int | None = None) -> list[dict]:
+    rows = [{"name": str(name), "value": count} for name, count in Counter(key_fn(item) for item in findings).most_common(limit)]
+    return rows
+
+
+def _risk_matrix(findings: list[dict]) -> list[dict]:
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for item in findings:
+        grouped[item.get("display_title") or item.get("title") or "Untitled finding"].append(item)
+    rows = []
+    for issue, items in grouped.items():
+        highest = _highest_severity(items)
+        repeats = len(items)
+        open_count = len([item for item in items if item.get("status") == "Open"])
+        score = min(100, _severity_rank(highest) * 20 + min(repeats - 1, 5) * 6 + min(open_count, 5) * 4)
+        level = "Critical" if score >= 80 else "High" if score >= 60 else "Medium" if score >= 35 else "Low"
+        rows.append({
+            "issue": issue,
+            "highestSeverity": highest,
+            "repeatCount": repeats,
+            "openCount": open_count,
+            "projectCount": len({item.get("project_name") for item in items if item.get("project_name")}),
+            "riskScore": score,
+            "riskLevel": level,
+        })
+    rows.sort(key=lambda row: (-row["riskScore"], -row["repeatCount"], row["issue"]))
+    return rows
+
+
+def _data_quality(findings: list[dict]) -> dict:
+    total = len(findings)
+    counts = {
+        "missingLocation": len([item for item in findings if not (item.get("location") or item.get("unit_label") or item.get("unit_or_area"))]),
+        "missingTrade": len([item for item in findings if not item.get("trade") or item.get("trade") == "General"]),
+        "lowConfidence": len([item for item in findings if float(item.get("confidence") or 0) < 0.6]),
+        "missingEvidence": len([item for item in findings if not item.get("evidence_required")]),
+    }
+    payload = {"totalRows": total}
+    for key, count in counts.items():
+        payload[key] = {"count": count, "percent": round((count / total) * 100, 1) if total else 0.0}
+    payload["health"] = "Good" if total == 0 or all(value["percent"] < 20 for value in payload.values() if isinstance(value, dict)) else "Needs review"
+    return payload
+
+
+def build_insights_page(
+    snapshot: RepositorySnapshot,
+    inspection_type: str = "All inspection types",
+    project: str = "All projects",
+    site: str = "All sites",
+    trade: str = "All trades",
+    severity: str = "All severities",
+    status: str = "All statuses",
+    date_range: str = "All time",
+) -> dict:
+    documents_by_id = {item.get("id"): item for item in snapshot.documents}
+    all_findings = []
+    for finding in _display_findings(snapshot.findings):
+        document = documents_by_id.get(finding.get("document_id"), {})
+        # Older rows may not contain every report dimension. Enrich them from
+        # the report in this same tenant snapshot before applying dropdowns.
+        all_findings.append({
+            **finding,
+            "project_name": finding.get("project_name") or document.get("project_name"),
+            "site_name": finding.get("site_name") or document.get("site_name"),
+            "inspection_type": finding.get("inspection_type") or document.get("inspection_type"),
+            "trade": finding.get("trade") or document.get("trade") or "General",
+        })
+    findings = _apply_insights_filters(
         all_findings,
-        inspection_type if inspection_type != "All inspection types" else "All types",
+        project=project,
+        site=site,
+        inspection_type=inspection_type,
+        trade=trade,
+        severity=severity,
+        status=status,
+        date_range=date_range,
     )
     repeated_patterns = []
     grouped: dict[str, list[dict]] = defaultdict(list)
@@ -224,6 +333,21 @@ def build_insights_page(snapshot: RepositorySnapshot, inspection_type: str = "Al
         filter_type="highRiskArea",
     )
 
+    severity_rows = _chart_rows(findings, lambda item: item.get("severity") or "Unknown")
+    status_rows = _chart_rows(findings, lambda item: item.get("status") or "Unknown")
+    issue_dates = Counter(str(item.get("created_at") or "")[:10] for item in findings if item.get("created_at"))
+    repeat_count = sum(count for count in Counter(item.get("display_title") or item.get("title") for item in findings).values() if count > 1)
+    open_count = len([item for item in findings if item.get("status") == "Open"])
+    filters = {
+        "projects": ["All projects"] + sorted({item.get("project_name") for item in all_findings if item.get("project_name")}),
+        "sites": ["All sites"] + sorted({item.get("site_name") for item in all_findings if item.get("site_name")}),
+        "inspectionTypes": ["All inspection types"] + sorted({item.get("inspection_type") for item in all_findings if item.get("inspection_type")}),
+        "trades": ["All trades"] + sorted({item.get("trade") for item in all_findings if item.get("trade")}),
+        "severities": ["All severities"] + [value for value in ["Critical", "High", "Medium", "Low"] if any(item.get("severity") == value for item in all_findings)],
+        "statuses": ["All statuses"] + sorted({item.get("status") for item in all_findings if item.get("status")}),
+        "dateRanges": ["All time", "7d", "30d", "90d"],
+    }
+
     return {
         "title": "Insights",
         "description": "A simple view of the main problem areas showing up across reports.",
@@ -231,6 +355,41 @@ def build_insights_page(snapshot: RepositorySnapshot, inspection_type: str = "Al
             "selected": inspection_type,
             "options": ["All inspection types"] + sorted({item["inspection_type"] for item in all_findings}),
         },
+        "filters": filters,
+        "selectedFilters": {"project": project, "site": site, "inspectionType": inspection_type, "trade": trade, "severity": severity, "status": status, "dateRange": date_range},
+        "kpis": [
+            {"key": "inspections", "label": "Inspections", "value": len({item.get("document_id") for item in findings if item.get("document_id")})},
+            {"key": "issues", "label": "Issues found", "value": len(findings)},
+            {"key": "open", "label": "Open issues", "value": open_count},
+            {"key": "highRisk", "label": "Critical / High", "value": len([item for item in findings if item.get("severity") in {"Critical", "High"}])},
+            {"key": "repeatRate", "label": "Repeat issue rate", "value": round((repeat_count / len(findings)) * 100, 1) if findings else 0, "suffix": "%"},
+        ],
+        "visuals": {
+            "severityDonut": severity_rows,
+            "statusDonut": status_rows,
+            "tradeBar": _chart_rows(findings, lambda item: item.get("trade") or "Unassigned", limit=8),
+            "categoryBar": _chart_rows(findings, lambda item: item.get("display_category") or item.get("category") or "General", limit=8),
+            "locationBar": _chart_rows(findings, lambda item: _exact_location_label(item), limit=8),
+            "issuesOverTime": [{"name": label, "value": issue_dates[label]} for label in sorted(issue_dates)],
+            "projectComparison": _chart_rows(findings, lambda item: item.get("project_name") or "Unknown project", limit=10),
+        },
+        "riskMatrix": _risk_matrix(findings),
+        "issueDrilldown": [
+            {
+                "id": item.get("id"), "issue": item.get("display_title") or item.get("title"),
+                "summary": item.get("plain_english_summary") or item.get("description"),
+                "project": item.get("project_name"), "site": item.get("site_name"),
+                "location": item.get("location") or item.get("unit_label") or item.get("unit_or_area"),
+                "inspectionType": item.get("inspection_type"), "trade": item.get("trade"),
+                "category": item.get("display_category") or item.get("category"), "severity": item.get("severity"),
+                "status": item.get("status"), "requiredFix": item.get("required_fix"),
+                "evidenceRequired": item.get("evidence_required") or [], "confidence": item.get("confidence"),
+                "createdAt": item.get("created_at"), "reportId": item.get("document_id"),
+            }
+            for item in findings
+        ],
+        "dataQuality": _data_quality(findings),
+        "hasReports": bool(snapshot.documents),
         "rootCauses": [item["label"] for item in root_cause_items] or ["No clear cause listed yet"],
         "rootCauseItems": root_cause_items,
         "highRiskAreas": [item["label"] for item in high_risk_area_items],
