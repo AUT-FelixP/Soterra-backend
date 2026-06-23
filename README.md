@@ -20,7 +20,7 @@ FastAPI backend for report ingestion, extraction, analytics, and persistence.
 
 ## Required environment variables
 
-- `SOTERRA_EXTRACTOR_MODE=ollama_text` for production external Ollama extraction without local AI packages, `local_ai` for the local Docling/Ollama pipeline, or `package` for the legacy package extractor.
+- `SOTERRA_EXTRACTOR_MODE=ollama_text` for extraction through the Ollama API, or `package` for the legacy package extractor.
 - `SOTERRA_AGENT_ENABLED=true`
 - `SOTERRA_REPOSITORY_MODE`
 - `SOTERRA_STORAGE_MODE`
@@ -54,7 +54,6 @@ SOTERRA_EXTRACTION_MODEL_ID=gpt-oss:20b
 SOTERRA_EXTRACTION_VISION_MODEL_ID=minimax-m3
 SOTERRA_OLLAMA_BASE_URL=https://ollama.com
 SOTERRA_OLLAMA_API_KEY=<secret>
-SOTERRA_PADDLE_OCR_ENABLED=false
 SOTERRA_PROCESS_INLINE=false
 SOTERRA_OLLAMA_TEXT_IMAGE_MAX_PAGES=3
 SOTERRA_OLLAMA_TEXT_IMAGE_DPI=90
@@ -62,71 +61,9 @@ SOTERRA_OLLAMA_TEXT_IMAGE_DPI=90
 
 The backend needs outbound HTTPS access to `SOTERRA_OLLAMA_BASE_URL`. `SOTERRA_PROCESS_INLINE=false` returns the upload response after the placeholder report is saved, then completes extraction in the background so the UI can close quickly. `SOTERRA_EXTRACTION_VISION_MODEL_ID` is used only when a PDF has no embedded text and the backend must send rendered page images to Ollama. Lower `SOTERRA_OLLAMA_TEXT_IMAGE_MAX_PAGES` and `SOTERRA_OLLAMA_TEXT_IMAGE_DPI` values make scanned PDFs process faster; increase them if extraction needs more page coverage.
 
-## Free local extraction setup
+## Ollama API notes
 
-Install the local extraction extras:
-
-```bash
-python -m pip install -e ".[local-ai]"
-```
-
-### Ollama cloud mode
-
-Use `ollama_text` for Azure production. Use this `local_ai` cloud mode only when you intentionally install the local AI extras for Docling parsing while still calling Ollama through the cloud API. Ollama's cloud API uses the same `/api/chat` contract as local Ollama, with bearer-token authentication.
-
-```bash
-SOTERRA_EXTRACTOR_MODE=local_ai
-SOTERRA_DOCUMENT_PARSE_PROVIDER=docling
-SOTERRA_EXTRACTION_PROVIDER=ollama
-SOTERRA_EXTRACTION_MODEL_ID=gpt-oss:20b
-SOTERRA_OLLAMA_BASE_URL=https://ollama.com
-SOTERRA_OLLAMA_API_KEY=your_ollama_api_key
-SOTERRA_PADDLE_OCR_ENABLED=false
-SOTERRA_LOCAL_AI_FALLBACK_TO_PACKAGE=true
-SOTERRA_AGENT_PROVIDER=ollama
-SOTERRA_AGENT_MODEL_ID=gpt-oss:20b
-```
-
-You can swap `SOTERRA_EXTRACTION_MODEL_ID` and `SOTERRA_AGENT_MODEL_ID` without code changes.
-
-### Local Ollama mode
-
-Install Ollama from [ollama.com](https://ollama.com), then pull the default extraction model:
-
-```bash
-ollama pull qwen2.5:7b-instruct
-```
-
-Recommended local environment:
-
-```bash
-SOTERRA_EXTRACTOR_MODE=local_ai
-SOTERRA_DOCUMENT_PARSE_PROVIDER=docling
-SOTERRA_EXTRACTION_PROVIDER=ollama
-SOTERRA_EXTRACTION_MODEL_ID=qwen2.5:7b-instruct
-SOTERRA_OLLAMA_BASE_URL=http://localhost:11434
-SOTERRA_PADDLE_OCR_ENABLED=false
-SOTERRA_LOCAL_AI_FALLBACK_TO_PACKAGE=true
-SOTERRA_AGENT_PROVIDER=ollama
-SOTERRA_AGENT_MODEL_ID=qwen2.5:7b-instruct
-```
-
-For low-memory machines:
-
-```bash
-SOTERRA_EXTRACTION_MODEL_ID=qwen2.5:3b-instruct
-SOTERRA_AGENT_MODEL_ID=qwen2.5:3b-instruct
-```
-
-Notes:
-
-- Docling parses PDFs and Word documents locally, including layout and tables where available.
-- PyMuPDF embedded text is used for normal PDFs when it is strong enough.
-- PaddleOCR can be enabled for scanned PDFs with `SOTERRA_PADDLE_OCR_ENABLED=true`, but it may be slower.
-- For local Ollama mode, Ollama must be running before uploading documents.
-- For Ollama cloud mode, the backend needs outbound HTTPS access and `SOTERRA_OLLAMA_API_KEY`.
-- Extraction quality depends on the selected model and parser output.
-- Do not commit `.env` secrets. Keep Supabase repository/storage settings unchanged and rotate exposed service role keys outside this code change.
+The extraction and agent model IDs can be changed independently without code changes. The configured Ollama endpoint may be hosted or local; both use the `/api/chat` API. Hosted endpoints require outbound HTTPS access and `SOTERRA_OLLAMA_API_KEY`. Do not commit `.env` secrets.
 
 ## Apply Supabase database migrations
 

@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import tempfile
 import unittest
-from dataclasses import replace
-from pathlib import Path
 from unittest.mock import patch
 
 import requests
@@ -11,11 +8,9 @@ import requests
 from soterra_backend.agent.local_agent import LocalOllamaAgentService
 from soterra_backend.config import Settings
 from soterra_backend.extraction_quality_gate import validate_extraction_quality
-from soterra_backend.extractors import build_extractor
-from soterra_backend.extractors.base import ExtractionArtifacts, ExtractionRequest
-from soterra_backend.extractors.docling_parser import ParsedDocument, ParsedPage
-from soterra_backend.extractors.local_ai_pipeline import LocalAIPipelineExtractor
+from soterra_backend.extractors.base import ExtractionRequest
 from soterra_backend.extractors.ollama_model import OllamaModelExtractor
+from soterra_backend.extractors.parsed_document import ParsedDocument, ParsedPage
 from soterra_backend.models import (
     AgentChatMessage,
     AgentChatSession,
@@ -24,20 +19,6 @@ from soterra_backend.models import (
     ExtractionResult,
     RepositorySnapshot,
 )
-
-
-def _settings(**updates) -> Settings:
-    base = replace(
-        Settings.from_env(),
-        extractor_mode="local_ai",
-        soterra_extraction_provider="ollama",
-        soterra_extraction_model_id="qwen2.5:7b-instruct",
-        soterra_ollama_base_url="http://localhost:11434",
-        soterra_document_parse_provider="docling",
-        local_ai_fallback_to_package=True,
-        paddle_ocr_enabled=False,
-    )
-    return replace(base, **updates)
 
 
 def _request() -> ExtractionRequest:
@@ -103,38 +84,7 @@ class FakeResponse:
         return {"message": {"content": self.content}}
 
 
-class FakeModel:
-    def __init__(self, extraction: ExtractionResult) -> None:
-        self.extraction = extraction
-
-    def extract(self, **kwargs) -> ExtractionResult:
-        return self.extraction
-
-
-class FakeFallback:
-    def extract(self, request: ExtractionRequest, pdf_path: Path) -> ExtractionArtifacts:
-        return ExtractionArtifacts(
-            extraction=ExtractionResult(
-                project_name=request.project_name,
-                site_name=request.site_name,
-                inspection_type="Fallback Inspection",
-                trade=request.trade,
-                inspector="Package Extractor",
-                report_date="2026-06-01",
-                summary="Fallback package extraction completed.",
-                findings=[],
-            ),
-            raw_text="fallback text",
-            extractor_name="package:doctr_rules_presidio",
-            metadata={"raw_text_length": 13, "finding_count": 0},
-        )
-
-
-class LocalAIPipelineTest(unittest.TestCase):
-    def test_local_ai_extractor_can_be_constructed_from_settings(self) -> None:
-        extractor = build_extractor(_settings())
-        self.assertIsInstance(extractor, LocalAIPipelineExtractor)
-
+class OllamaModelTest(unittest.TestCase):
     def test_missing_ollama_gives_clear_error(self) -> None:
         extractor = OllamaModelExtractor(base_url="http://localhost:11434", model_id="qwen2.5:7b-instruct")
         parsed = ParsedDocument(full_text="failed fire collar", pages=[ParsedPage(page_number=1, text="failed fire collar")])
@@ -234,7 +184,7 @@ class LocalAIPipelineTest(unittest.TestCase):
         with patch("soterra_backend.config._load_env_file", return_value=None), patch.dict(
             "os.environ",
             {
-                "SOTERRA_EXTRACTOR_MODE": "local_ai",
+                "SOTERRA_EXTRACTOR_MODE": "ollama_text",
                 "SOTERRA_OLLAMA_BASE_URL": "https://ollama.com",
                 "SOTERRA_OLLAMA_API_KEY": "test-key",
             },
@@ -244,52 +194,6 @@ class LocalAIPipelineTest(unittest.TestCase):
 
         self.assertEqual(settings.soterra_ollama_base_url, "https://ollama.com")
         self.assertEqual(settings.soterra_ollama_api_key, "test-key")
-
-    def test_local_ai_pipeline_calls_finalize_extraction(self) -> None:
-        extraction = ExtractionResult.model_validate(_payload())
-        extractor = LocalAIPipelineExtractor(_settings(), model_extractor=FakeModel(extraction))
-        docling_doc = ParsedDocument(
-            full_text="Fire collar missing in riser.",
-            pages=[ParsedPage(page_number=1, text="Fire collar missing in riser.")],
-            metadata={"parse_provider": "docling"},
-        )
-        with tempfile.NamedTemporaryFile(suffix=".pdf") as tmp_file, patch(
-            "soterra_backend.extractors.local_ai_pipeline.extract_embedded_text",
-            return_value="",
-        ), patch("soterra_backend.extractors.local_ai_pipeline.parse_with_docling", return_value=docling_doc):
-            artifacts = extractor.extract(_request(), Path(tmp_file.name))
-        finding = artifacts.extraction.findings[0]
-        self.assertEqual(finding.source_document, "inspection.pdf")
-        self.assertTrue(finding.required_fix)
-        self.assertEqual(artifacts.metadata["parse_provider"], "docling")
-
-    def test_word_documents_skip_pymupdf_embedded_text_and_use_docling(self) -> None:
-        extraction = ExtractionResult.model_validate(_payload())
-        extractor = LocalAIPipelineExtractor(_settings(), model_extractor=FakeModel(extraction))
-        docling_doc = ParsedDocument(
-            full_text="DOCX report text: Fire collar missing in riser.",
-            pages=[ParsedPage(page_number=1, text="DOCX report text: Fire collar missing in riser.")],
-            metadata={"parse_provider": "docling", "source_format": "docx"},
-        )
-        with tempfile.NamedTemporaryFile(suffix=".docx") as tmp_file, patch(
-            "soterra_backend.extractors.local_ai_pipeline.extract_embedded_text",
-            side_effect=AssertionError("PyMuPDF should not parse DOCX embedded text."),
-        ), patch("soterra_backend.extractors.local_ai_pipeline.parse_with_docling", return_value=docling_doc):
-            artifacts = extractor.extract(_request(), Path(tmp_file.name))
-
-        self.assertEqual(artifacts.metadata["embedded_text_length"], 0)
-        self.assertEqual(artifacts.metadata["parse_provider"], "docling")
-
-    def test_fallback_to_package_only_when_enabled(self) -> None:
-        extractor = LocalAIPipelineExtractor(_settings(local_ai_fallback_to_package=True), fallback=FakeFallback())
-        with patch.object(extractor, "_extract_local_ai", side_effect=RuntimeError("Docling missing")):
-            artifacts = extractor.extract(_request(), Path("inspection.pdf"))
-        self.assertTrue(artifacts.metadata["fallback_used"])
-
-        no_fallback = LocalAIPipelineExtractor(_settings(local_ai_fallback_to_package=False), fallback=FakeFallback())
-        with patch.object(no_fallback, "_extract_local_ai", side_effect=RuntimeError("Docling missing")):
-            with self.assertRaisesRegex(RuntimeError, "Docling missing"):
-                no_fallback.extract(_request(), Path("inspection.pdf"))
 
     def test_quality_diagnostics_include_lengths_counts_and_warnings(self) -> None:
         extraction = ExtractionResult(
@@ -420,6 +324,20 @@ class LocalAgentTest(unittest.TestCase):
         self.assertIn("Location: Riser", response.answer)
         self.assertIn("Evidence: after photos", response.answer)
         self.assertNotIn("**", response.answer)
+
+    def test_agent_falls_back_when_ollama_times_out(self) -> None:
+        def fake_generate(self, *, system_prompt: str, user_prompt: str, timeout_seconds=None):
+            raise RuntimeError("Could not reach Ollama at https://ollama.com.")
+
+        repo = FakeAgentRepository()
+        service = LocalOllamaAgentService(repo)
+        with patch.object(OllamaModelExtractor, "generate_text", fake_generate):
+            response = service.chat(tenant_id="ten-1", user_id="usr-1", role="member", message="What open issues need fixing?")
+
+        self.assertIn("Open issues: 1", response.answer)
+        self.assertIn("Fire collar missing", response.answer)
+        self.assertFalse(response.safety["external_model_used"])
+        self.assertEqual(response.safety["provider"], "ollama_fallback")
 
 
 if __name__ == "__main__":

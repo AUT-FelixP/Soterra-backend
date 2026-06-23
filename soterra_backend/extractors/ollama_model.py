@@ -10,7 +10,7 @@ from pydantic import ValidationError
 
 from ..models import ExtractionResult
 from .base import ExtractionRequest
-from .docling_parser import ParsedDocument, document_for_llm
+from .parsed_document import ParsedDocument, document_for_llm
 
 
 SYSTEM_PROMPT = """You are extracting construction inspection issues from a PDF or Word report.
@@ -35,7 +35,7 @@ class OllamaModelExtractor:
     def __init__(
         self,
         *,
-        base_url: str = "http://localhost:11434",
+        base_url: str = "https://ollama.com",
         model_id: str = "qwen2.5:7b-instruct",
         api_key: str | None = None,
         timeout_seconds: int = 90,
@@ -63,20 +63,25 @@ class OllamaModelExtractor:
         raise RuntimeError(f"Ollama returned invalid extraction JSON after retry: {last_error}") from last_error
 
     def generate_text(self, *, system_prompt: str, user_prompt: str, timeout_seconds: int | None = None) -> str:
-        response = requests.post(
-            f"{self.base_url}/api/chat",
-            headers=self._headers(),
-            json={
-                "model": self.model_id,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "stream": False,
-                "options": {"temperature": self.temperature},
-            },
-            timeout=timeout_seconds or self.timeout_seconds,
-        )
+        try:
+            response = requests.post(
+                f"{self.base_url}/api/chat",
+                headers=self._headers(),
+                json={
+                    "model": self.model_id,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "stream": False,
+                    "options": {"temperature": self.temperature},
+                },
+                timeout=timeout_seconds or self.timeout_seconds,
+            )
+        except requests.RequestException as exc:
+            raise RuntimeError(
+                f"Could not reach Ollama at {self.base_url}. Start Ollama or set SOTERRA_OLLAMA_BASE_URL."
+            ) from exc
         if response.status_code >= 400:
             raise RuntimeError(f"Ollama request failed with HTTP {response.status_code}: {response.text[:300]}")
         data = response.json()

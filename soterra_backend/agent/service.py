@@ -80,7 +80,7 @@ class SoterraAgentService:
             "configured": configured,
             "provider": provider,
             "model_id": model_id,
-            "mode": "deterministic" if provider == "native" else ("local_model" if provider in {"ollama", "local", "local_ollama"} else "model"),
+            "mode": "deterministic" if provider == "native" else ("external_api" if provider == "ollama" else "model"),
         }
 
     def chat(
@@ -110,17 +110,36 @@ class SoterraAgentService:
                 page_context=page_context,
             )
         if self._provider() in {"ollama", "local", "local_ollama"}:
-            return self._local_ollama().chat(
-                message=message,
-                tenant_id=tenant_id,
-                user_id=user_id,
-                role=role,
-                session_id=session_id,
-                report_id=report_id,
-                issue_id=issue_id,
-                project_slug=project_slug,
-                page_context=page_context,
-            )
+            try:
+                return self._local_ollama().chat(
+                    message=message,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    role=role,
+                    session_id=session_id,
+                    report_id=report_id,
+                    issue_id=issue_id,
+                    project_slug=project_slug,
+                    page_context=page_context,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "soterra_agent_ollama_failed_using_native provider=%s model=%s error=%s",
+                    self.status().get("provider"),
+                    self.status().get("model_id"),
+                    type(exc).__name__,
+                )
+                return self._native().chat(
+                    message=message,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    role=role,
+                    session_id=session_id,
+                    report_id=report_id,
+                    issue_id=issue_id,
+                    project_slug=project_slug,
+                    page_context=page_context,
+                )
         used_tools: list[str] = []
 
         def record_tool(name: str) -> None:

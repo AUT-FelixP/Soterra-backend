@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from typing import Any
@@ -16,8 +17,12 @@ from ..config import DEFAULT_LOCAL_MODEL_ID
 from ..extractors.ollama_model import OllamaModelExtractor
 from ..issue_intelligence import enrich_findings
 from ..models import RepositorySnapshot
+from ..services.issue_query_service import IssueQuery, IssueQueryService
 from ..repositories.base import RepositoryBackend
 from .schemas import AgentChatResponse, AgentRelatedEntities
+
+
+logger = logging.getLogger(__name__)
 
 
 LOCAL_AGENT_SYSTEM_PROMPT = """You are Soterra's inspection assistant.
@@ -41,10 +46,11 @@ Reinspection readiness: <ready/not ready and why>"""
 
 
 class LocalOllamaAgentService:
+    """Remote Ollama API-backed agent. The historical class name is kept for compatibility."""
     def __init__(self, repository: RepositoryBackend) -> None:
         self.repository = repository
         self.model = OllamaModelExtractor(
-            base_url=os.getenv("SOTERRA_OLLAMA_BASE_URL", "http://localhost:11434"),
+            base_url=os.getenv("SOTERRA_OLLAMA_BASE_URL", "https://ollama.com"),
             model_id=os.getenv("SOTERRA_AGENT_MODEL_ID", os.getenv("SOTERRA_EXTRACTION_MODEL_ID", DEFAULT_LOCAL_MODEL_ID)),
             api_key=os.getenv("SOTERRA_OLLAMA_API_KEY") or os.getenv("OLLAMA_API_KEY"),
             timeout_seconds=int(os.getenv("SOTERRA_AGENT_TIMEOUT_SECONDS", "90")),
@@ -56,7 +62,7 @@ class LocalOllamaAgentService:
             "enabled": True,
             "configured": True,
             "provider": "ollama",
-            "mode": "local_model",
+            "mode": "external_api",
             "model_id": self.model.model_id,
         }
 
@@ -80,6 +86,19 @@ class LocalOllamaAgentService:
         self.repository.add_agent_chat_message(tenant_id=tenant_id, user_id=user_id, session_id=session.id, role="user", content=message)
 
         snapshot = _active_snapshot(self.repository.load_snapshot(tenant_id))
+        discovery = _issue_discovery_response(self.repository, tenant_id, message, project_slug)
+        if discovery is not None:
+            answer, payload = discovery
+            self.repository.add_agent_chat_message(tenant_id=tenant_id, user_id=user_id, session_id=session.id, role="assistant", content=answer)
+            return AgentChatResponse(
+                session_id=session.id, answer=answer,
+                used_tools=[{"name": "issue_query", "reason": "Applied tenant-scoped issue and location filters."}],
+                citations=[{"type": "issues", "label": "Tenant-scoped extracted issues"}],
+                context={"tenant_scoped": True, "active_records_only": True},
+                safety={"tenant_id_used": tenant_id, "external_model_used": False, "provider": "native_query"},
+                suggested_follow_ups=payload.get("follow_up_buttons", []), related_entities=AgentRelatedEntities(),
+                confidence="high", mode="location_mode", structured_response=payload,
+            )
         route, payload = _route_and_payload(
             snapshot=snapshot,
             message=message,
@@ -87,18 +106,24 @@ class LocalOllamaAgentService:
             project_slug=project_slug,
             page_context=page_context,
         )
-        answer = self.model.generate_text(
-            system_prompt=LOCAL_AGENT_SYSTEM_PROMPT,
-            user_prompt=_build_user_prompt(
-                message=message,
-                route=route,
-                payload=payload,
-                history=history,
-                memory=memory,
-                page_context=page_context,
-            ),
-        )
-        answer = _clean_agent_answer(answer)
+        model_error: Exception | None = None
+        try:
+            answer = self.model.generate_text(
+                system_prompt=LOCAL_AGENT_SYSTEM_PROMPT,
+                user_prompt=_build_user_prompt(
+                    message=message,
+                    route=route,
+                    payload=payload,
+                    history=history,
+                    memory=memory,
+                    page_context=page_context,
+                ),
+            )
+            answer = _clean_agent_answer(answer)
+        except Exception as exc:
+            model_error = exc
+            logger.warning("local_ollama_agent_failed route=%s model=%s error=%s", route, self.model.model_id, type(exc).__name__)
+            answer = _deterministic_answer(route, payload)
         if not answer or _is_weak_open_issue_answer(answer, route):
             answer = _deterministic_answer(route, payload)
 
@@ -110,13 +135,13 @@ class LocalOllamaAgentService:
         return AgentChatResponse(
             session_id=session.id,
             answer=answer,
-            used_tools=[{"name": route, "reason": "Fetched tenant-scoped backend data before calling Ollama."}],
+            used_tools=[{"name": route, "reason": "Fetched tenant-scoped backend data before calling Ollama." if model_error is None else "Fetched tenant-scoped backend data and used deterministic fallback because Ollama was unavailable."}],
             citations=[{"type": route, "label": "Tenant-scoped Soterra data"}],
             context={"tenant_scoped": True, "history_used": bool(history), "memory_used": bool(memory), "active_records_only": True},
-            safety={"tenant_id_used": tenant_id, "external_model_used": False, "provider": "ollama"},
+            safety={"tenant_id_used": tenant_id, "external_model_used": model_error is None, "provider": "ollama" if model_error is None else "ollama_fallback"},
             suggested_follow_ups=["Show open issues", "Summarize reinspection readiness", "List evidence needed"],
             related_entities=related,
-            confidence="medium",
+            confidence="medium" if model_error is None else "high",
             mode=mode,
             structured_response=payload if isinstance(payload, dict) else {},
         )
@@ -163,7 +188,7 @@ class LocalOllamaAgentService:
             user_id=user_id,
             session_id=session_id,
             memory_type="tool",
-            content=f"Local Ollama agent used {route} with tenant-scoped data.",
+            content=f"Remote Ollama agent used {route} with tenant-scoped data.",
             payload_json=json.dumps({"route": route, "counts": _payload_counts(payload)}),
         )
 
@@ -173,6 +198,32 @@ def _active_snapshot(snapshot: RepositorySnapshot) -> RepositorySnapshot:
     active_ids = {item["id"] for item in active_documents}
     active_findings = [item for item in snapshot.findings if item.get("document_id") in active_ids]
     return snapshot.model_copy(update={"documents": active_documents, "findings": enrich_findings(active_findings, actionable_only=True)})
+
+
+def _issue_discovery_response(repository: RepositoryBackend, tenant_id: str, message: str, project_slug: str | None) -> tuple[str, dict] | None:
+    normalized = message.lower()
+    if not any(term in normalized for term in ("open issue", "open defect", "needs fixing", "list defects", "show issues")):
+        return None
+    service = IssueQueryService(repository)
+    all_result = service.query(tenant_id, IssueQuery(status="Open"))
+    facet_values = [entry["value"] for key in ("projects", "addresses", "sites", "levels", "units", "areas", "trades", "severities") for entry in all_result["facets"].get(key, [])]
+    has_scope = bool(project_slug) or any(value.lower() in normalized for value in facet_values)
+    location_groups: dict[tuple[str, str, str], list[dict]] = {}
+    for item in all_result["items"]:
+        key = (item.get("project") or "Unknown project", item.get("address") or "Address not stated", item.get("site") or item.get("exact_location") or "Location not stated")
+        location_groups.setdefault(key, []).append(item)
+    if not has_scope and len(location_groups) > 1:
+        options = [{"project": key[0], "address": key[1], "location": key[2], "open_issue_count": len(items), "high_priority_count": sum(i.get("severity") in {"High", "Critical"} for i in items)} for key, items in location_groups.items()]
+        return "I found open issues in multiple locations. Which location do you want to inspect?", {"type": "location_clarification", "options": options, "follow_up_buttons": [f"Show open issues at {o['location']}" for o in options[:4]]}
+    if not has_scope:
+        return None
+    filters: dict = {"status": "Open"}
+    if project_slug: filters["project"] = project_slug
+    for name, key in (("projects", "project"), ("addresses", "address"), ("sites", "site"), ("levels", "level"), ("units", "unit"), ("areas", "area"), ("trades", "trade"), ("severities", "severity")):
+        for entry in all_result["facets"].get(name, []):
+            if entry["value"].lower() in normalized: filters[key] = entry["value"]
+    result = service.query(tenant_id, filters)
+    return f"I found {result['total']} matching open issue{'s' if result['total'] != 1 else ''}.", {"type": "issue_cards", **result, "follow_up_buttons": ["Show evidence required", "Show high priority only"]}
 
 
 def _route_and_payload(

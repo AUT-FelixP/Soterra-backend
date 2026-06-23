@@ -21,13 +21,6 @@ def build_extractor(settings: Settings) -> ExtractorBackend:
             raise RuntimeError("Model extraction is disabled.")
         return ModelExtractor(settings)
 
-    if mode == "local_ai":
-        if settings.soterra_extraction_provider.strip().lower() != "ollama":
-            raise RuntimeError("SOTERRA_EXTRACTOR_MODE=local_ai requires SOTERRA_EXTRACTION_PROVIDER=ollama.")
-        from .local_ai_pipeline import LocalAIPipelineExtractor
-
-        return LocalAIPipelineExtractor(settings)
-
     if mode == "ollama_text":
         if settings.soterra_extraction_provider.strip().lower() != "ollama":
             raise RuntimeError("SOTERRA_EXTRACTOR_MODE=ollama_text requires SOTERRA_EXTRACTION_PROVIDER=ollama.")

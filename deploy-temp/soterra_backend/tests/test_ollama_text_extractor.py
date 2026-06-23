@@ -32,7 +32,6 @@ def _settings(**updates) -> Settings:
         soterra_ollama_api_key="test-key",
         model_extraction_retry_count=0,
         model_extraction_max_findings=40,
-        paddle_ocr_enabled=False,
     )
     return replace(base, **updates)
 
@@ -100,7 +99,7 @@ def _write_pdf(path: Path, text: str) -> None:
 
 
 class OllamaTextExtractorTest(unittest.TestCase):
-    def test_ollama_text_mode_builds_without_local_ai_imports(self) -> None:
+    def test_ollama_text_mode_builds_without_heavy_ai_imports(self) -> None:
         real_import = builtins.__import__
         attempted: list[str] = []
 

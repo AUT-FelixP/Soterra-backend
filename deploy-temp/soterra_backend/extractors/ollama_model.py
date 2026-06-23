@@ -10,7 +10,7 @@ from pydantic import ValidationError
 
 from ..models import ExtractionResult
 from .base import ExtractionRequest
-from .docling_parser import ParsedDocument, document_for_llm
+from .parsed_document import ParsedDocument, document_for_llm
 
 
 SYSTEM_PROMPT = """You are extracting construction inspection issues from a PDF or Word report.
@@ -35,7 +35,7 @@ class OllamaModelExtractor:
     def __init__(
         self,
         *,
-        base_url: str = "http://localhost:11434",
+        base_url: str = "https://ollama.com",
         model_id: str = "qwen2.5:7b-instruct",
         api_key: str | None = None,
         timeout_seconds: int = 90,

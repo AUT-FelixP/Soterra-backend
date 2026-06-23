@@ -3623,6 +3623,7 @@ dependencies = [
     { name = "pymupdf" },
     { name = "pypdf" },
     { name = "python-multipart" },
+    { name = "requests" },
     { name = "supabase" },
     { name = "uvicorn" },
 ]
@@ -3659,6 +3660,7 @@ requires-dist = [
     { name = "pypdf", specifier = ">=5,<6" },
     { name = "python-doctr", marker = "extra == 'package'", specifier = ">=1,<2" },
     { name = "python-multipart", specifier = ">=0.0.20,<1" },
+    { name = "requests", specifier = ">=2.32,<3" },
     { name = "scikit-learn", marker = "extra == 'ml'", specifier = ">=1.5,<2" },
     { name = "smolagents", extras = ["litellm"], marker = "extra == 'model'", specifier = ">=1.18,<2" },
     { name = "supabase", specifier = ">=2.16,<3" },

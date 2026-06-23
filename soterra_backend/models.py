@@ -16,6 +16,41 @@ class StrictSchemaModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class IssueLocation(StrictSchemaModel):
+    project_name: str | None = None
+    project_slug: str | None = None
+    address: str | None = None
+    site_name: str | None = None
+    building: str | None = None
+    level: str | None = None
+    unit_label: str | None = None
+    area: str | None = None
+    room: str | None = None
+    element: str | None = None
+    exact_location_text: str | None = None
+    source_page: int | None = Field(default=None, ge=1)
+    source_quote: str | None = None
+    confidence: float = Field(default=0.5, ge=0, le=1)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class IssueAnalytics(StrictSchemaModel):
+    descriptive: str | None = None
+    diagnostic: str | None = None
+    predictive: str | None = None
+    prescriptive: str | None = None
+    ai_insight: str | None = None
+
+
+class IssueQuality(StrictSchemaModel):
+    has_source_quote: bool = False
+    has_exact_location: bool = False
+    has_required_fix: bool = False
+    has_evidence_required: bool = False
+    confidence: float = Field(default=0.5, ge=0, le=1)
+    warnings: list[str] = Field(default_factory=list)
+
+
 class ExtractedFinding(StrictSchemaModel):
     title: str = Field(min_length=3, max_length=240)
     description: str = Field(min_length=3)
@@ -40,6 +75,9 @@ class ExtractedFinding(StrictSchemaModel):
     source_quote: str | None = None
     confidence: float = Field(default=0.5, ge=0, le=1)
     extraction_warnings: list[str] = Field(default_factory=list)
+    issue_location: IssueLocation = Field(default_factory=IssueLocation)
+    analytics: IssueAnalytics = Field(default_factory=IssueAnalytics)
+    quality: IssueQuality = Field(default_factory=IssueQuality)
 
 
 class PredictedInspection(StrictSchemaModel):

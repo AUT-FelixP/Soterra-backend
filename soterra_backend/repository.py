@@ -1956,6 +1956,7 @@ class SupabaseRepository:
                     "project_slug": project.get("slug", "unknown-project"),
                     "project_lifecycle": project.get("project_lifecycle", "active"),
                     "site_name": project.get("site_name", "Unknown site"),
+                    "address": document.get("address") or project.get("address"),
                     "inspection_type": document.get("inspection_type", "Unknown inspection"),
                     "document_status": document.get("status", "Reviewing"),
                 }
@@ -2246,6 +2247,7 @@ SELECT
   p.slug AS project_slug,
   p.project_lifecycle AS project_lifecycle,
   COALESCE(d.site_name, p.site_name) AS site_name,
+  COALESCE(d.address, p.address) AS address,
   d.inspection_type AS inspection_type,
   d.status AS document_status
 FROM findings f

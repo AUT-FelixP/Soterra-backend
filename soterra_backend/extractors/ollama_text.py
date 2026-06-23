@@ -15,6 +15,7 @@ from pypdf import PdfReader
 from ..config import Settings
 from ..extraction_quality import finalize_extraction
 from ..models import ExtractionResult
+from ..extraction.location_quality import enrich_location_quality
 from .base import ExtractionArtifacts, ExtractionRequest
 from .model.prompts import SYSTEM_PROMPT, build_user_prompt
 from .model.quality import dedupe_findings
@@ -80,11 +81,22 @@ class OllamaTextExtractor:
                 },
             )
 
-        payload = self._extract_payload(request=request, raw_text=raw_text, images=page_images)
+        payload, retry_count = self._extract_payload(request=request, raw_text=raw_text, images=page_images)
         extraction = ExtractionResult.model_validate(payload)
         extraction = dedupe_findings(finalize_extraction(extraction, request.filename))
+        extraction = extraction.model_copy(update={"findings": [enrich_location_quality(item) for item in extraction.findings]})
+        extracted_count = len(extraction.findings)
+        metadata_warnings: list[str] = []
         if self.max_findings > 0:
             extraction = extraction.model_copy(update={"findings": extraction.findings[: self.max_findings]})
+            if extracted_count > self.max_findings:
+                metadata_warnings.append(
+                    f"Findings truncated from {extracted_count} to configured maximum {self.max_findings}."
+                )
+            elif extracted_count == self.max_findings:
+                metadata_warnings.append(
+                    f"Finding count reached configured maximum {self.max_findings}; review the report for possible truncation."
+                )
 
         metadata = {
             "extractor_mode": "ollama_text",
@@ -95,7 +107,10 @@ class OllamaTextExtractor:
             "extraction_source": document_text.source,
             "raw_text_length": len(raw_text),
             "finding_count": len(extraction.findings),
+            "finding_count_before_limit": extracted_count,
+            "retry_count": retry_count,
             "fallback_used": False,
+            "warnings": metadata_warnings,
             "document_text": document_text.metadata,
         }
         return ExtractionArtifacts(
@@ -105,7 +120,7 @@ class OllamaTextExtractor:
             metadata=metadata,
         )
 
-    def _extract_payload(self, *, request: ExtractionRequest, raw_text: str, images: list[str] | None = None) -> dict:
+    def _extract_payload(self, *, request: ExtractionRequest, raw_text: str, images: list[str] | None = None) -> tuple[dict, int]:
         attempts = max(1, self.settings.model_extraction_retry_count + 1)
         last_error: Exception | None = None
         for attempt in range(attempts):
@@ -119,7 +134,7 @@ class OllamaTextExtractor:
                     user_prompt = _retry_prompt(user_prompt, last_error)
                 payload = _normalize_payload(self._call_ollama(user_prompt=user_prompt, images=images or []), request=request)
                 ExtractionResult.model_validate(payload)
-                return payload
+                return payload, attempt
             except (json.JSONDecodeError, ValidationError, ValueError) as exc:
                 last_error = exc
         assert last_error is not None
@@ -352,6 +367,9 @@ def _is_passed_finding(finding: dict) -> bool:
 
 def _normalize_finding_payload(finding: dict) -> dict:
     normalized = dict(finding)
+    normalized.setdefault("issue_location", {})
+    normalized.setdefault("analytics", {})
+    normalized.setdefault("quality", {})
     text = " ".join(
         str(normalized.get(key) or "")
         for key in ("title", "description", "category", "trade", "root_cause", "source_quote")

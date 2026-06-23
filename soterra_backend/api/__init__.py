@@ -13,7 +13,7 @@ from ..services import DashboardService, InsightsAgentService, IssueService
 from ..services.malware import NoopMalwareScanner
 from ..services.report_service import ReportIngestionService, ReportUploadService
 from ..storage import build_storage
-from .routers import agent, auth, dashboard, health, issues, reports, tracker
+from .routers import agent, analytics, auth, dashboard, health, issues, reports, tracker
 from .security import bearer_token, set_auth_headers
 
 PUBLIC_PATHS = {
@@ -110,6 +110,7 @@ def register_routers(app: FastAPI) -> None:
     app.include_router(dashboard.router)
     app.include_router(tracker.router)
     app.include_router(agent.router)
+    app.include_router(analytics.router)
 
 
 @lru_cache(maxsize=1)

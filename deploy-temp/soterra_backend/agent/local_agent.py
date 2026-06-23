@@ -44,7 +44,7 @@ class LocalOllamaAgentService:
     def __init__(self, repository: RepositoryBackend) -> None:
         self.repository = repository
         self.model = OllamaModelExtractor(
-            base_url=os.getenv("SOTERRA_OLLAMA_BASE_URL", "http://localhost:11434"),
+            base_url=os.getenv("SOTERRA_OLLAMA_BASE_URL", "https://ollama.com"),
             model_id=os.getenv("SOTERRA_AGENT_MODEL_ID", os.getenv("SOTERRA_EXTRACTION_MODEL_ID", DEFAULT_LOCAL_MODEL_ID)),
             api_key=os.getenv("SOTERRA_OLLAMA_API_KEY") or os.getenv("OLLAMA_API_KEY"),
             timeout_seconds=int(os.getenv("SOTERRA_AGENT_TIMEOUT_SECONDS", "90")),

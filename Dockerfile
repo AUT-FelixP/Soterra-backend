@@ -18,7 +18,7 @@ COPY soterra_backend ./soterra_backend
 COPY supabase ./supabase
 
 RUN python -m pip install --upgrade pip \
-    && python -m pip install -e ".[local-ai]"
+    && python -m pip install -e .
 
 EXPOSE 8000
 

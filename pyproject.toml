@@ -17,6 +17,7 @@ dependencies = [
   "PyMuPDF>=1.26,<2",
   "pypdf>=5,<6",
   "python-multipart>=0.0.20,<1",
+  "requests>=2.32,<3",
   "supabase>=2.16,<3",
   "uvicorn>=0.35,<1",
 ]
@@ -32,13 +33,6 @@ ml = ["scikit-learn>=1.5,<2"]
 model = [
   "huggingface_hub>=0.36,<1",
   "smolagents[litellm]>=1.18,<2",
-]
-local-ai = [
-  "docling",
-  "paddleocr",
-  "PyMuPDF>=1.26,<2",
-  "pdfplumber",
-  "requests>=2.32,<3",
 ]
 [project.scripts]
 app = "soterra_backend.api:app"

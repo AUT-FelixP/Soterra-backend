@@ -97,10 +97,6 @@ class Settings:
     soterra_ollama_api_key: str | None
     soterra_document_parse_provider: str
     soterra_document_parse_model_id: str
-    local_ai_fallback_to_package: bool
-    paddle_ocr_enabled: bool
-    paddle_ocr_max_pages: int
-    paddle_ocr_lang: str
     document_parse_max_pages: int
     document_parse_max_new_tokens: int
     document_parse_text_in_pictures: bool
@@ -166,17 +162,16 @@ class Settings:
             "package",
         ).strip()
         extractor_mode_normalized = extractor_mode.lower()
-        local_ai_mode = extractor_mode_normalized == "local_ai"
         ollama_text_mode = extractor_mode_normalized == "ollama_text"
         extraction_provider = os.getenv(
             "SOTERRA_EXTRACTION_PROVIDER",
-            "ollama" if local_ai_mode or ollama_text_mode else _default_model_provider(),
+            "ollama" if ollama_text_mode else _default_model_provider(),
         ).strip()
         default_model_id = DEFAULT_LOCAL_MODEL_ID if extraction_provider.lower() == "ollama" else DEFAULT_MODEL_ID
         extraction_model_id = os.getenv("SOTERRA_EXTRACTION_MODEL_ID", default_model_id).strip()
         document_parse_provider = os.getenv(
             "SOTERRA_DOCUMENT_PARSE_PROVIDER",
-            "docling" if local_ai_mode else _default_parse_provider(),
+            _default_parse_provider(),
         ).strip()
         document_parse_model_id = os.getenv("SOTERRA_DOCUMENT_PARSE_MODEL_ID", DEFAULT_PARSE_MODEL_ID).strip()
         agent_provider = os.getenv("SOTERRA_AGENT_PROVIDER", _default_agent_provider()).strip()
@@ -202,14 +197,10 @@ class Settings:
             soterra_extraction_provider=extraction_provider,
             soterra_extraction_model_id=extraction_model_id,
             soterra_extraction_vision_model_id=(os.getenv("SOTERRA_EXTRACTION_VISION_MODEL_ID") or "").strip() or None,
-            soterra_ollama_base_url=os.getenv("SOTERRA_OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/"),
+            soterra_ollama_base_url=os.getenv("SOTERRA_OLLAMA_BASE_URL", "https://ollama.com").rstrip("/"),
             soterra_ollama_api_key=os.getenv("SOTERRA_OLLAMA_API_KEY") or os.getenv("OLLAMA_API_KEY"),
             soterra_document_parse_provider=document_parse_provider,
             soterra_document_parse_model_id=document_parse_model_id,
-            local_ai_fallback_to_package=_to_bool(os.getenv("SOTERRA_LOCAL_AI_FALLBACK_TO_PACKAGE"), True),
-            paddle_ocr_enabled=_to_bool(os.getenv("SOTERRA_PADDLE_OCR_ENABLED"), False),
-            paddle_ocr_max_pages=int(os.getenv("SOTERRA_PADDLE_OCR_MAX_PAGES", "6")),
-            paddle_ocr_lang=os.getenv("SOTERRA_PADDLE_OCR_LANG", "en").strip() or "en",
             document_parse_max_pages=int(os.getenv("SOTERRA_DOCUMENT_PARSE_MAX_PAGES", "12")),
             document_parse_max_new_tokens=int(os.getenv("SOTERRA_DOCUMENT_PARSE_MAX_NEW_TOKENS", "2048")),
             document_parse_text_in_pictures=_to_bool(os.getenv("SOTERRA_DOCUMENT_PARSE_TEXT_IN_PICTURES"), False),
@@ -217,7 +208,7 @@ class Settings:
             soterra_agent_model_id=agent_model_id,
             soterra_insights_provider=os.getenv("SOTERRA_INSIGHTS_PROVIDER", DEFAULT_INSIGHTS_PROVIDER).strip(),
             model_extraction_temperature=float(os.getenv("SOTERRA_MODEL_EXTRACTION_TEMPERATURE", "0.0")),
-            model_extraction_max_findings=int(os.getenv("SOTERRA_MODEL_EXTRACTION_MAX_FINDINGS", "40")),
+            model_extraction_max_findings=int(os.getenv("SOTERRA_MODEL_EXTRACTION_MAX_FINDINGS", "120")),
             model_extraction_timeout_seconds=int(os.getenv("SOTERRA_MODEL_EXTRACTION_TIMEOUT_SECONDS", "90")),
             extraction_timeout_seconds=int(
                 os.getenv(
