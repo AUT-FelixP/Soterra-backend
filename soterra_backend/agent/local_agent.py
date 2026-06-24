@@ -106,6 +106,29 @@ class LocalOllamaAgentService:
             project_slug=project_slug,
             page_context=page_context,
         )
+        if route == "changeIssueStatus":
+            issue_id = str(payload.get("issue_id") or "")
+            status = str(payload.get("status") or "")
+            updated = self.repository.update_issue(tenant_id, issue_id, status=status)
+            answer = (
+                f"Updated {issue_id} to {status}."
+                if updated
+                else f"I could not find {issue_id} in the current tenant issue register."
+            )
+            self.repository.add_agent_chat_message(tenant_id=tenant_id, user_id=user_id, session_id=session.id, role="assistant", content=answer)
+            return AgentChatResponse(
+                session_id=session.id,
+                answer=answer,
+                used_tools=[{"name": "changeIssueStatus", "reason": "Detected a natural-language issue status change request."}],
+                citations=[{"type": "issues", "label": "Tenant-scoped issue register"}],
+                context={"tenant_scoped": True, "active_records_only": True},
+                safety={"tenant_id_used": tenant_id, "external_model_used": False, "provider": "native_action"},
+                suggested_follow_ups=["Show open issues", "Summarize reinspection readiness"],
+                related_entities=AgentRelatedEntities(issues=[issue_id] if issue_id else []),
+                confidence="high" if updated else "medium",
+                mode="action_plan_mode",
+                structured_response={**payload, "updated": bool(updated)},
+            )
         model_error: Exception | None = None
         try:
             answer = self.model.generate_text(
@@ -235,6 +258,9 @@ def _route_and_payload(
     page_context: str | None,
 ) -> tuple[str, dict]:
     normalized = f"{page_context or ''} {message}".lower()
+    status_change = _change_issue_status_payload(message)
+    if status_change:
+        return "changeIssueStatus", status_change
     if report_id:
         return "report_detail", build_report_detail(snapshot, report_id) or {"found": False, "missing": "report_id"}
     if any(term in normalized for term in ("failure", "failed extraction", "processing", "job", "upload status")):
@@ -246,6 +272,32 @@ def _route_and_payload(
     if any(term in normalized for term in ("issue", "defect", "tracker", "open", "fix", "evidence", "reinspection")):
         return "open_issues", _build_open_issues_payload(snapshot=snapshot, project_slug=project_slug)
     return "reports_summary", build_report_list(snapshot)
+
+
+def _change_issue_status_payload(message: str) -> dict | None:
+    """Turn short site-manager commands into a deterministic issue update tool call."""
+    issue_match = re.search(r"\b(issue-[a-z0-9-]+)\b", message, flags=re.IGNORECASE)
+    if not issue_match:
+        return None
+
+    normalized = message.lower()
+    status: str | None = None
+    if re.search(r"\b(close|closed|complete|completed|resolved|resolve)\b", normalized):
+        status = "Closed"
+    elif re.search(r"\b(reopen|open)\b", normalized):
+        status = "Open"
+    elif re.search(r"\b(in progress|in-progress|progress|started|start)\b", normalized):
+        status = "In Progress"
+
+    if not status:
+        return None
+
+    return {
+        "type": "changeIssueStatus",
+        "tool": "changeIssueStatus",
+        "issue_id": issue_match.group(1),
+        "status": status,
+    }
 
 
 def _build_user_prompt(*, message: str, route: str, payload: dict, history: list[Any], memory: list[Any], page_context: str | None) -> str:
@@ -354,9 +406,12 @@ def _format_open_issues_answer(payload: dict) -> str:
         lines.extend(
             [
                 f"{index}. {issue.get('title') or 'Inspection issue'}",
+                f"   Issue ID: {issue.get('id') or 'Not stated'}",
+                f"   Status: {issue.get('status') or 'Open'}",
                 f"   Severity: {issue.get('severity') or 'Not stated'}",
                 f"   Location: {issue.get('location') or 'Not stated'}",
                 f"   Responsible trade: {issue.get('trade') or issue.get('category') or 'Not stated'}",
+                f"   Source: {issue.get('report_id') or 'Not stated'}",
                 f"   Fix: {issue.get('required_fix') or 'Assign an owner, complete the rectification, and update the issue status.'}",
                 f"   Evidence: {evidence_text}",
                 "",
