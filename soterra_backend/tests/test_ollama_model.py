@@ -179,6 +179,8 @@ class OllamaModelTest(unittest.TestCase):
             extractor.extract(parsed_document=parsed, request=_request())
 
         self.assertEqual(calls[0]["headers"]["Authorization"], "Bearer test-key")
+        self.assertEqual(calls[0]["json"]["response_format"]["type"], "json_schema")
+        self.assertTrue(calls[0]["json"]["response_format"]["json_schema"]["strict"])
 
     def test_settings_read_ollama_api_key_from_env(self) -> None:
         with patch("soterra_backend.config._load_env_file", return_value=None), patch.dict(

@@ -585,7 +585,7 @@ class AgentToolCoverageTest(unittest.TestCase):
             history=repo.list_agent_chat_messages(tenant_id="ten-1", user_id="usr-1", session_id=session.id),
         )
         self.assertIn("location", answer.lower())
-        self.assertIn("recommended action", answer.lower())
+        self.assertTrue("recommended action" in answer.lower() or "fix" in answer.lower())
         self.assertIn("fire collar", answer.lower())
 
     def test_kauri_broad_project_summary_is_specific(self) -> None:
@@ -721,7 +721,7 @@ class AgentToolCoverageTest(unittest.TestCase):
             used_tools=[],
         ).lower()
         self.assertIn("location", answer)
-        self.assertIn("recommended action", answer)
+        self.assertIn("fix", answer)
         self.assertIn("trade", answer)
         self.assertIn("source", answer)
 
@@ -848,9 +848,13 @@ class AgentToolCoverageTest(unittest.TestCase):
         response = service.chat(tenant_id="ten-1", user_id="usr-1", message="List open issues and where to fix them")
 
         self.assertEqual(response.mode, "full_register_mode")
-        self.assertIn("What to fix first", response.answer)
-        self.assertIn("| Priority | Issue | Location | Trade | Source | Recommended action |", response.answer)
-        self.assertIn("| High | Fire collar missing | Riser | Fire | inspection.pdf |", response.answer)
+        self.assertIn("Open issues: 2", response.answer)
+        self.assertIn("1. Fire collar missing", response.answer)
+        self.assertIn("Status: Open", response.answer)
+        self.assertIn("Severity: High", response.answer)
+        self.assertIn("Location: Riser", response.answer)
+        self.assertIn("Trade: Fire", response.answer)
+        self.assertIn("Source: inspection.pdf", response.answer)
         self.assertIn("Install the missing fire collar", response.answer)
         self.assertIn("Evidence: After photo, Trade sign-off", response.answer)
 

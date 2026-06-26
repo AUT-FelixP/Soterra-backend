@@ -391,36 +391,37 @@ def _format_issue_action_summary(findings: list[dict], snapshot: RepositorySnaps
     project_label = ", ".join(project for project, _ in projects.most_common(3))
     severity_label = ", ".join(f"{count} {severity}" for severity, count in severities.most_common())
 
-    lines = [f"I found {len(findings)} open issue(s) from the extracted report data."]
+    lines = [f"Open issues: {len(findings)}"]
     if project_label:
-        lines.append(f"Project/site: {project_label}.")
+        lines.append(f"Project/site: {project_label}")
     if severity_label:
-        lines.append(f"Priority mix: {severity_label}.")
+        lines.append(f"Priority mix: {severity_label}")
     lines.append("")
-    lines.append(f"{heading}:")
-    lines.append("| Priority | Issue | Location | Trade | Source | Recommended action |")
-    lines.append("| --- | --- | --- | --- | --- | --- |")
 
-    for item in findings[:10]:
+    for index, item in enumerate(findings[:10], start=1):
         title = item.get("display_title") or item.get("title") or "Recorded inspection issue"
         location = _issue_location(item)
         trade = item.get("trade") or item.get("display_category") or item.get("category") or "General"
         source = _issue_source(item, report_lookup)
         fix = item.get("required_fix") or "Assign an owner, complete the fix, and upload close-out evidence."
         evidence = _format_evidence(item.get("evidence_required"))
-        action = f"{fix} Evidence: {evidence}"
-        lines.append(
-            "| "
-            + " | ".join(
-                _table_cell(value)
-                for value in [item.get("severity") or "Unrated", title, location, trade, source, action]
-            )
-            + " |"
+        lines.extend(
+            [
+                f"{index}. {title}",
+                f"ID: {item.get('id') or 'Not stated'}",
+                f"Status: {item.get('status') or 'Open'}",
+                f"Severity: {item.get('severity') or 'Unrated'}",
+                f"Location: {location}",
+                f"Trade: {trade}",
+                f"Source: {source}",
+                f"Fix: {fix}",
+                f"Evidence: {evidence}",
+                "",
+            ]
         )
 
     missing_locations = sum(1 for item in findings if _issue_location(item) == "Exact location not stated in the report")
     if missing_locations:
-        lines.append("")
         lines.append(f"Location note: {missing_locations} issue(s) did not include an exact location in the extracted report text.")
     if len(findings) > 10:
         lines.append(f"Showing the first 10 issues by priority; {len(findings) - 10} more are available in the tracker.")

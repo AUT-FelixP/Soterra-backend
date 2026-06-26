@@ -14,19 +14,25 @@ from .parsed_document import ParsedDocument, document_for_llm
 
 
 SYSTEM_PROMPT = """You are extracting construction inspection issues from a PDF or Word report.
-Return only valid JSON.
+Return exactly one valid JSON object that matches the supplied schema.
+Do not include Markdown, comments, prose before JSON, or prose after JSON.
 Do not invent issues.
 Only extract issues supported by source text.
 Do not include passed items, generic report headings, legal footer text, or inspection metadata as defects.
 If the report says an item failed, missing, incomplete, not compliant, below minimum, not installed, outstanding, or requires rectification, extract it.
 For every finding include title, description, severity, category, trade, location, unit_label, root_cause, required_fix, evidence_required, source_page, source_quote, confidence, and extraction_warnings.
+Make required_fix specific enough for a trade to complete the work without rereading the report.
+Make evidence_required specific: list the close-out photos, sign-offs, tests, certificates, or inspection records needed.
+Use source_quote for the shortest exact source text that proves the issue.
+Extract location whenever the report gives a level, unit, room, area, elevation, gridline, riser, shaft, lot, or address.
 Severity rules:
 Critical means failed life safety, fire stopping, waterproofing failure, structural risk, council failure, or urgent reinspection blocker.
 High means non-compliance requiring rework, missing installation, failed checklist item, or close-out blocker.
 Medium means incomplete evidence, coordination issue, or minor defect requiring confirmation.
 Low means observation or minor issue that does not block close-out.
-If location is missing, leave it null and add a warning.
-If trade is uncertain, set trade to "General" and add a warning.
+If location is missing, leave it null and add "Exact issue location needs manual confirmation." to extraction_warnings.
+If trade is uncertain, set trade to "General" and add "Responsible trade needs manual confirmation." to extraction_warnings.
+If severity, required_fix, evidence, source_quote, or confidence is uncertain, keep the best supported value and add a clear warning.
 Keep finding titles concise and construction-specific.
 Keep descriptions plain English and actionable."""
 
@@ -36,7 +42,7 @@ class OllamaModelExtractor:
         self,
         *,
         base_url: str = "https://ollama.com",
-        model_id: str = "qwen2.5:7b-instruct",
+        model_id: str = "mistral:7b",
         api_key: str | None = None,
         timeout_seconds: int = 90,
         temperature: float = 0.0,
@@ -100,6 +106,7 @@ class OllamaModelExtractor:
                         {"role": "user", "content": prompt},
                     ],
                     "stream": False,
+                    "response_format": _response_format(schema),
                     "format": schema,
                     "options": {"temperature": self.temperature},
                 },
@@ -138,6 +145,17 @@ def _build_prompt(*, parsed_document: ParsedDocument, request: ExtractionRequest
         "Document text:\n"
         f"{document_for_llm(parsed_document)}"
     )
+
+
+def _response_format(schema: dict) -> dict:
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "soterra_extraction_result",
+            "strict": True,
+            "schema": schema,
+        },
+    }
 
 
 def _retry_prompt(prompt: str, last_error: Exception | None) -> str:

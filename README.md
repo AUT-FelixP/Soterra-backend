@@ -65,6 +65,23 @@ The backend needs outbound HTTPS access to `SOTERRA_OLLAMA_BASE_URL`. `SOTERRA_P
 
 The extraction and agent model IDs can be changed independently without code changes. The configured Ollama endpoint may be hosted or local; both use the `/api/chat` API. Hosted endpoints require outbound HTTPS access and `SOTERRA_OLLAMA_API_KEY`. Do not commit `.env` secrets.
 
+Default local Ollama model:
+
+```bash
+SOTERRA_EXTRACTION_MODEL_ID=mistral:7b
+SOTERRA_AGENT_MODEL_ID=mistral:7b
+```
+
+Production overrides for stronger hosted Ollama runs:
+
+```bash
+SOTERRA_EXTRACTION_MODEL_ID=mistral-nemo:12b
+SOTERRA_AGENT_MODEL_ID=mistral-nemo:12b
+# or
+SOTERRA_EXTRACTION_MODEL_ID=deepseek-r1:14b
+SOTERRA_AGENT_MODEL_ID=deepseek-r1:14b
+```
+
 ## Apply Supabase database migrations
 
 Uploading the backend files to Git does not update the tables in Supabase. When a

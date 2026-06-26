@@ -7,7 +7,10 @@ from pathlib import Path
 
 DEFAULT_MODEL_PROVIDER = "huggingface"
 DEFAULT_MODEL_ID = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
-DEFAULT_LOCAL_MODEL_ID = "qwen2.5:7b-instruct"
+# Free local/Ollama default. Override with SOTERRA_AGENT_MODEL_ID or
+# SOTERRA_EXTRACTION_MODEL_ID, for example mistral-nemo:12b or deepseek-r1:14b
+# in production.
+DEFAULT_LOCAL_MODEL_ID = "mistral:7b"
 DEFAULT_PARSE_MODEL_PROVIDER = "package"
 DEFAULT_PARSE_MODEL_ID = "HuggingFaceTB/SmolVLM-256M-Instruct"
 DEFAULT_AGENT_PROVIDER = "native"
