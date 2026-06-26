@@ -7,6 +7,25 @@ from .extractors.package_doctr import ISSUE_HINTS
 from .models import ExtractionResult
 
 
+DANGLING_WORDS = {
+    "a",
+    "an",
+    "and",
+    "as",
+    "at",
+    "by",
+    "for",
+    "from",
+    "in",
+    "of",
+    "on",
+    "or",
+    "the",
+    "to",
+    "with",
+}
+
+
 class ExtractionQualityError(RuntimeError):
     def __init__(self, message: str, diagnostics: dict) -> None:
         super().__init__(message)
@@ -23,6 +42,7 @@ def validate_extraction_quality(extraction: ExtractionResult, raw_text: str) -> 
         "source_quote_coverage": _source_quote_coverage(extraction),
         "missing_location_count": _missing_location_count(extraction),
         "low_confidence_count": _low_confidence_count(extraction),
+        "cut_off_finding_count": _cut_off_finding_count(extraction),
         "duplicate_finding_count": _duplicate_finding_count(extraction),
         "general_trade_count": _general_trade_count(extraction),
         "quality_warnings": [],
@@ -45,10 +65,17 @@ def validate_extraction_quality(extraction: ExtractionResult, raw_text: str) -> 
         warnings.append(f"{diagnostics['missing_location_count']} finding(s) are missing a specific location.")
     if diagnostics["low_confidence_count"]:
         warnings.append(f"{diagnostics['low_confidence_count']} finding(s) have confidence below 0.5.")
+    if diagnostics["cut_off_finding_count"]:
+        warnings.append(f"{diagnostics['cut_off_finding_count']} finding(s) appear to contain cut-off wording.")
     if diagnostics["duplicate_finding_count"]:
         warnings.append(f"{diagnostics['duplicate_finding_count']} duplicate or near-duplicate finding(s) were detected.")
     if extraction.findings and diagnostics["general_trade_count"] / max(1, len(extraction.findings)) > 0.6:
         warnings.append("More than 60% of findings use the generic General trade.")
+    if extraction.findings and diagnostics["cut_off_finding_count"] / max(1, len(extraction.findings)) > 0.25:
+        raise ExtractionQualityError(
+            "Too many extracted findings appear cut off. Manual review or a stronger extraction model is required.",
+            diagnostics,
+        )
 
     diagnostics["quality_gate_passed"] = True
     return diagnostics
@@ -72,6 +99,35 @@ def _missing_location_count(extraction: ExtractionResult) -> int:
 
 def _low_confidence_count(extraction: ExtractionResult) -> int:
     return sum(1 for finding in extraction.findings if finding.confidence < 0.5)
+
+
+def _cut_off_finding_count(extraction: ExtractionResult) -> int:
+    return sum(
+        1
+        for finding in extraction.findings
+        if any(
+            _looks_cut_off(value)
+            for value in (
+                finding.title,
+                finding.description,
+                finding.issue_title,
+                finding.plain_english_summary,
+                finding.required_fix,
+            )
+        )
+    )
+
+
+def _looks_cut_off(value: str | None) -> bool:
+    text = (value or "").strip()
+    if not text:
+        return False
+    words = text.split()
+    last = words[-1] if words else ""
+    normalized = re.sub(r"[^a-z0-9-]", "", last.lower())
+    if len(normalized) == 1 or normalized in DANGLING_WORDS:
+        return True
+    return len(text) >= 115 and text[-1] not in ".!?"
 
 
 def _general_trade_count(extraction: ExtractionResult) -> int:

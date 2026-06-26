@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from ..base import ExtractionRequest
 
 
@@ -21,9 +23,9 @@ Do not extract:
 - guessed locations or trades
 
 For every finding, write for a builder or site manager:
-- title: clear defect title, not a copied fragment
-- description: what is wrong
-- plain_english_summary: why it matters on site
+- title: clear defect title, not a copied fragment, never ending mid-word or mid-phrase
+- description: complete plain-English sentence explaining what is wrong, where it is, and what trade action is needed
+- plain_english_summary: complete plain-English sentence explaining why it matters on site
 - category/trade: Passive Fire, Envelope, Structure, Plumbing, Electrical, Waterproofing, Mechanical, Fire Safety, General
 - severity: Critical, High, Medium, or Low
 - issue_location: prioritize the exact issue location. Search the same row, previous row,
@@ -40,9 +42,14 @@ For every finding, write for a builder or site manager:
 - analytics: descriptive, diagnostic, predictive, prescriptive, and ai_insight for every finding
 - quality: source/location/fix/evidence flags, confidence, and warnings
 
-Descriptions must be complete and must not be cut off. Require source_quote and source_page
-where the report makes them available. High and Critical findings require a source quote,
-required fix, evidence required, and exact location or the manual-confirmation warning.
+Titles, descriptions, fixes, summaries, and evidence must be complete and must not be cut off.
+Do not end any field with dangling words such as "or", "and", "the", "to", "in", "of",
+"with", or a single letter. If a source line is truncated, rewrite the finding into a
+complete builder-friendly sentence using the surrounding context and include the exact
+source text in source_quote.
+Require source_quote and source_page where the report makes them available. High and
+Critical findings require a source quote, required fix, evidence required, and exact
+location or the manual-confirmation warning.
 
 Use null for unknown nullable values and [] for empty lists. Return JSON only.
 
@@ -57,6 +64,14 @@ def build_user_prompt(
     raw_text: str,
     max_findings: int,
 ) -> str:
+    raw_text_limit = _raw_text_limit()
+    report_text = _clip_at_boundary(raw_text, raw_text_limit)
+    truncation_note = ""
+    if len(raw_text) > len(report_text):
+        truncation_note = (
+            "\n\nNOTE: The report text was shortened to fit the model context. "
+            "Prioritize clear failed/non-compliant/open items visible in the provided text."
+        )
     return (
         f"Filename: {request.filename}\n"
         f"Uploaded project name: {request.project_name}\n"
@@ -68,5 +83,23 @@ def build_user_prompt(
         "Use report metadata where present. Use uploaded values only when the report does not state them.\n"
         "Return JSON only.\n\n"
         "REPORT TEXT:\n"
-        f"{raw_text[:48000]}"
+        f"{report_text}"
+        f"{truncation_note}"
     )
+
+
+def _raw_text_limit() -> int:
+    try:
+        return max(12000, int(os.getenv("SOTERRA_OLLAMA_TEXT_MAX_CHARS", "120000")))
+    except ValueError:
+        return 120000
+
+
+def _clip_at_boundary(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    clipped = text[:limit]
+    boundary = max(clipped.rfind("\n\n"), clipped.rfind(". "), clipped.rfind("\n"), clipped.rfind(" "))
+    if boundary > int(limit * 0.85):
+        return clipped[:boundary].rstrip()
+    return clipped.rstrip()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import base64
 from dataclasses import dataclass
@@ -148,8 +149,8 @@ class OllamaTextExtractor:
             "content": (
                 f"{user_prompt}\n\n"
                 "Return one JSON object only. Do not wrap it in markdown. "
-                "The object must match this JSON schema:\n"
-                f"{json.dumps(schema)[:16000]}"
+                "Use the required schema supplied in the API format parameter. "
+                "Every title, description, fix, and summary must be complete words and complete sentences."
             ),
         }
         if images:
@@ -166,7 +167,7 @@ class OllamaTextExtractor:
                     ],
                     "stream": False,
                     "format": schema,
-                    "options": {"temperature": self.temperature},
+                    "options": _ollama_options(self.temperature),
                 },
                 timeout_seconds=self.timeout_seconds,
                 client=self.client,
@@ -203,6 +204,22 @@ def _post_ollama_chat(
     if client is not None:
         return client.post(f"{base_url}/api/chat", headers=headers, json=payload, timeout=timeout_seconds)
     return httpx.post(f"{base_url}/api/chat", headers=headers, json=payload, timeout=timeout_seconds)
+
+
+def _ollama_options(temperature: float) -> dict[str, Any]:
+    options: dict[str, Any] = {"temperature": temperature}
+    for env_key, option_key in (
+        ("SOTERRA_OLLAMA_NUM_CTX", "num_ctx"),
+        ("SOTERRA_OLLAMA_NUM_PREDICT", "num_predict"),
+    ):
+        value = os.getenv(env_key)
+        if not value:
+            continue
+        try:
+            options[option_key] = int(value)
+        except ValueError:
+            continue
+    return options
 
 
 def render_page_images_for_ollama(pdf_path: Path, *, max_pages: int, dpi: int = 110) -> list[str]:

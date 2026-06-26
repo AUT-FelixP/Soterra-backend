@@ -294,21 +294,19 @@ class FakeAgentRepository:
 
 class LocalAgentTest(unittest.TestCase):
     def test_agent_prompt_uses_fetched_tenant_data(self) -> None:
-        prompts = []
-
         def fake_generate(self, *, system_prompt: str, user_prompt: str, timeout_seconds=None):
-            prompts.append(user_prompt)
-            return "Kauri Apartments has 1 open high-risk fire issue: Fire collar missing in Riser. Next action is repair and upload after photos."
+            raise AssertionError("Open issue discovery should use the fast grounded response path.")
 
         repo = FakeAgentRepository()
         service = LocalOllamaAgentService(repo)
         with patch.object(OllamaModelExtractor, "generate_text", fake_generate):
             response = service.chat(tenant_id="ten-1", user_id="usr-1", role="member", message="What open issues need fixing?")
 
-        self.assertIn("Kauri Apartments", prompts[0])
-        self.assertIn("Fire collar missing", prompts[0])
-        self.assertNotIn("Imaginary Project", prompts[0])
+        self.assertIn("I found 1 matching open issue", response.answer)
+        self.assertIn("Kauri Apartments", response.answer)
         self.assertIn("Fire collar missing", response.answer)
+        self.assertIn("Fix:", response.answer)
+        self.assertIn("Evidence: after photos", response.answer)
         self.assertEqual(repo.tenant_id, "ten-1")
         self.assertTrue(repo.memory)
 
@@ -339,7 +337,7 @@ class LocalAgentTest(unittest.TestCase):
         self.assertIn("Open issues: 1", response.answer)
         self.assertIn("Fire collar missing", response.answer)
         self.assertFalse(response.safety["external_model_used"])
-        self.assertEqual(response.safety["provider"], "ollama_fallback")
+        self.assertEqual(response.safety["provider"], "native_query")
 
 
 if __name__ == "__main__":

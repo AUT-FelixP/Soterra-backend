@@ -30,6 +30,24 @@ VAGUE_PHRASES = (
     "defect found",
 )
 
+DANGLING_WORDS = {
+    "a",
+    "an",
+    "and",
+    "as",
+    "at",
+    "by",
+    "for",
+    "from",
+    "in",
+    "of",
+    "on",
+    "or",
+    "the",
+    "to",
+    "with",
+}
+
 
 @dataclass(frozen=True)
 class ExtractionQualityResult:
@@ -62,6 +80,7 @@ def score_extraction_quality(extraction: ExtractionResult, *, raw_text: str = ""
     missing_fix = _ratio(findings, lambda item: not _meaningful(item.required_fix))
     low_confidence = _ratio(findings, lambda item: item.confidence < 0.55)
     vague = _ratio(findings, _is_vague_finding)
+    cut_off = _ratio(findings, _has_cut_off_field)
     duplicate = _duplicate_ratio(findings)
 
     if missing_fix > 0:
@@ -73,6 +92,9 @@ def score_extraction_quality(extraction: ExtractionResult, *, raw_text: str = ""
     if vague > 0:
         warnings.append(f"{vague:.0%} of findings are vague.")
         score -= min(0.3, vague * 0.45)
+    if cut_off > 0:
+        warnings.append(f"{cut_off:.0%} of findings appear cut off.")
+        score -= min(0.35, cut_off * 0.5)
     if duplicate > 0:
         warnings.append(f"{duplicate:.0%} of findings appear duplicated.")
         score -= min(0.2, duplicate * 0.3)
@@ -91,7 +113,7 @@ def score_extraction_quality(extraction: ExtractionResult, *, raw_text: str = ""
             warnings.append(f"Finding '{finding.title}' is missing a location.")
             score -= 0.02
 
-    should_fallback = missing_fix > 0.4 or low_confidence > 0.4 or vague > 0.4 or duplicate > 0.5
+    should_fallback = missing_fix > 0.4 or low_confidence > 0.4 or vague > 0.4 or cut_off > 0.25 or duplicate > 0.5
     reason = "quality_passed"
     if should_fallback:
         reason = "quality_threshold_failed"
@@ -137,6 +159,31 @@ def _is_vague_finding(finding: ExtractedFinding) -> bool:
         ]
     ).lower()
     return any(phrase in text for phrase in VAGUE_PHRASES)
+
+
+def _has_cut_off_field(finding: ExtractedFinding) -> bool:
+    return any(
+        _looks_cut_off(value)
+        for value in (
+            finding.title,
+            finding.description,
+            finding.issue_title,
+            finding.plain_english_summary,
+            finding.required_fix,
+        )
+    )
+
+
+def _looks_cut_off(value: str | None) -> bool:
+    text = (value or "").strip()
+    if not text:
+        return False
+    words = text.split()
+    last = words[-1] if words else ""
+    normalized = "".join(ch for ch in last.lower() if ch.isalnum() or ch == "-")
+    if len(normalized) == 1 or normalized in DANGLING_WORDS:
+        return True
+    return len(text) >= 115 and text[-1] not in ".!?"
 
 
 def _duplicate_ratio(findings: list[ExtractedFinding]) -> float:

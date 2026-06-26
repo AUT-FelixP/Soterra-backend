@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from pydantic import BaseModel, Field
 
 
@@ -15,7 +17,12 @@ class ParsedDocument(BaseModel):
     metadata: dict = Field(default_factory=dict)
 
 
-def document_for_llm(parsed: ParsedDocument, *, max_chars: int = 42000) -> str:
+def document_for_llm(parsed: ParsedDocument, *, max_chars: int | None = None) -> str:
+    if max_chars is None:
+        try:
+            max_chars = max(12000, int(os.getenv("SOTERRA_OLLAMA_TEXT_MAX_CHARS", "120000")))
+        except ValueError:
+            max_chars = 120000
     if parsed.pages:
         parts = []
         for page in parsed.pages:
@@ -28,4 +35,10 @@ def document_for_llm(parsed: ParsedDocument, *, max_chars: int = 42000) -> str:
         output = "\n\n".join(parts).strip()
     else:
         output = parsed.full_text.strip()
-    return output[:max_chars]
+    if len(output) <= max_chars:
+        return output
+    clipped = output[:max_chars]
+    boundary = max(clipped.rfind("\n\n"), clipped.rfind(". "), clipped.rfind("\n"), clipped.rfind(" "))
+    if boundary > int(max_chars * 0.85):
+        return clipped[:boundary].rstrip()
+    return clipped.rstrip()

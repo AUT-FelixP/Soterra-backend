@@ -148,11 +148,337 @@ POSITIVE_DEFECT_CUES = (
     "exceeds approved system tolerance",
 )
 
+# Construction taxonomy terms are based on NZ construction inspection language
+# and NZ Building Code compliance domains. Keep these lists auditable and extend
+# them as new missed terms are found in real reports.
+PASSIVE_FIRE_KEYWORDS = (
+    "passive fire",
+    "fire stop",
+    "fire-stop",
+    "firestop",
+    "fire stopping",
+    "fire-stopping",
+    "fire stopping system",
+    "fire rated",
+    "fire-rated",
+    "fire separation",
+    "firecell",
+    "fire cell",
+    "fire resistance rating",
+    "frr",
+    "fire damper",
+    "fire door",
+    "fire wall",
+    "firewall",
+    "fire alarm",
+    "sprinkler",
+    "warning system",
+    "escape route",
+    "fire engineer",
+    "fire report",
+    "fire seal",
+    "fire sealant",
+    "breakaway",
+    "collar",
+    "intumescent",
+    "plasterboard lining",
+    "bulkhead",
+    "penetration seal",
+    "annular gap",
+    "smoke seal",
+)
+
+FIRE_DAMPER_CONTEXT_TERMS = (
+    "fire rated",
+    "fire-rated",
+    "fire stopping",
+    "fire-stopping",
+    "fire separation",
+    "frr",
+    "fire engineer",
+    "fire seal",
+    "fire sealant",
+)
+
+SURFACE_WATER_KEYWORDS = (
+    "surface water",
+    "stormwater",
+    "rainwater",
+    "roof drainage",
+    "site drainage",
+    "gutter",
+    "gutters",
+    "downpipe",
+    "downpipes",
+    "spouting",
+    "sump",
+    "cesspit",
+    "channel drain",
+    "soakage",
+    "overland flow",
+    "drainage outlet",
+)
+
+WET_AREA_KEYWORDS = (
+    "internal moisture",
+    "wet area",
+    "wet-area",
+    "shower",
+    "bathroom",
+    "laundry",
+    "bath",
+    "basin",
+    "tub",
+    "sink",
+    "impervious",
+    "waterproof lining",
+    "waterproof membrane",
+    "water splash",
+    "floor waste",
+    "tile",
+    "tiles",
+    "grout",
+    "sealant",
+    "silicone",
+    "sanitary fixture",
+)
+
+WATERPROOFING_KEYWORDS = (
+    "waterproof",
+    "waterproofing",
+    "membrane",
+    "tanking",
+    "upstand",
+    "threshold",
+    "step down",
+    "step-down",
+    "deck/balcony",
+    "deck balcony",
+    "deck wall",
+    "deck/wall",
+    "saddle flashing",
+    "drain back",
+    "water entry",
+    "ponding",
+)
+
+ENVELOPE_KEYWORDS = (
+    "envelope",
+    "roof cladding",
+    "wall cladding",
+    "roof",
+    "cladding",
+    "external opening",
+    "junction",
+    "junctions",
+    "penetration",
+    "penetrations",
+    "building wrap",
+    "cavity wrap",
+    "wall wrap",
+    "rigid air barrier",
+    "rab",
+    "drained cavity",
+    "cavity",
+    "rainscreen",
+    "parapet",
+    "soffit",
+    "scriber",
+    "batten",
+    "battens",
+    "flashing",
+    "flashings",
+    "head flashing",
+    "sill flashing",
+    "jamb flashing",
+    "corner flashing",
+    "apron flashing",
+    "kick-out flashing",
+    "verge flashing",
+    "barge flashing",
+    "wanz",
+    "joinery",
+    "window",
+    "door opening",
+    "weatherboard",
+    "weathertight",
+    "weather-tight",
+)
+
+MECHANICAL_KEYWORDS = (
+    "mechanical",
+    "mechanical ventilation",
+    "natural ventilation",
+    "ventilation rate",
+    "air purity",
+    "airflow",
+    "return air",
+    "supply air",
+    "duct",
+    "ducting",
+    "ductwork",
+    "flexi duct",
+    "flex duct",
+    "hvac",
+    "ventilation",
+    "grille",
+    "diffuser",
+    "extract fan",
+    "rangehood",
+    "bathroom fan",
+    "toilet fan",
+    "laundry fan",
+    "flue",
+    "gas appliance",
+    "gas-fuel appliance",
+    "volume control damper",
+    "lagging",
+    "acoustic lagging",
+    "clearance",
+    "services coordination",
+    "clash",
+    "clashing",
+)
+
+ELECTRICAL_KEYWORDS = (
+    "electricity",
+    "electrical",
+    "electrical installation",
+    "electrical supply",
+    "essential service",
+    "cable",
+    "cabling",
+    "conduit",
+    "data cabling",
+    "data cable",
+    "data conduit",
+    "metering",
+    "switchboard",
+    "socket",
+    "outlet",
+    "light switch",
+    "distribution board",
+    "db board",
+    "rcd",
+    "earth bonding",
+    "earthing",
+    "emergency lighting",
+    "power",
+    "lighting",
+)
+
+PLUMBING_KEYWORDS = (
+    "plumbing",
+    "sanitary plumbing",
+    "hydraulic",
+    "hydraulics",
+    "pipework",
+    "pipe work",
+    "drainage",
+    "waste pipe",
+    "water supply",
+    "cold water",
+    "potable water",
+    "backflow",
+    "valve",
+    "tap",
+    "tapware",
+    "water heater",
+    "foul water",
+    "wastewater",
+    "soil pipe",
+    "trap",
+    "vent pipe",
+    "discharge pipe",
+    "sewer",
+    "hot water",
+    "hwc",
+    "sanitary",
+)
+
+STRUCTURE_KEYWORDS = (
+    "structural",
+    "structure",
+    "foundation",
+    "footing",
+    "slab",
+    "subfloor",
+    "floor",
+    "wall framing",
+    "roof framing",
+    "framing",
+    "frame",
+    "stud",
+    "joist",
+    "rafter",
+    "truss",
+    "blocking",
+    "nog",
+    "beam",
+    "lintel",
+    "masonry",
+    "blockwork",
+    "steel",
+    "retaining wall",
+    "concrete",
+    "timber-to-concrete",
+    "seismic",
+    "bracing",
+)
+
+DURABILITY_KEYWORDS = (
+    "durability",
+    "durable",
+    "corrosion",
+    "corroded",
+    "treated timber",
+    "galvanised",
+    "galvanized",
+    "stainless steel",
+    "fixing durability",
+    "5 years",
+    "15 years",
+    "50 years",
+    "b2 durability",
+)
+
+ACCESS_SAFETY_KEYWORDS = (
+    "access route",
+    "stairs",
+    "stair",
+    "ramp",
+    "landing",
+    "handrail",
+    "balustrade",
+    "barrier",
+    "guard",
+    "slip resistance",
+    "slip-resistant",
+    "fall height",
+    "fall from height",
+    "threshold height",
+    "opening restrictor",
+)
+
+ENERGY_EFFICIENCY_KEYWORDS = (
+    "energy efficiency",
+    "thermal envelope",
+    "thermal resistance",
+    "insulation",
+    "r-value",
+    "r value",
+    "airtightness",
+    "uncontrolled airflow",
+    "hot water system",
+    "thermal bridge",
+)
+
 
 def enrich_finding(finding: dict[str, Any]) -> dict[str, Any]:
     text = _source_text(finding)
     title = summarize_issue_title(text)
     category = categorize_issue({**finding, "title": title, "description": text})
+    trade = _trade_label({**finding, "display_category": category, "title": title, "description": text})
     summary = plain_english_summary({**finding, "title": title, "description": text})
     actionable, reason = is_actionable_issue(finding)
     return {
@@ -161,6 +487,9 @@ def enrich_finding(finding: dict[str, Any]) -> dict[str, Any]:
         "displayTitle": title,
         "plain_english_summary": summary,
         "plainEnglishSummary": summary,
+        "trade": trade,
+        "display_trade": trade,
+        "displayTrade": trade,
         "display_category": category,
         "displayCategory": category,
         "is_actionable": actionable,
@@ -193,6 +522,8 @@ def summarize_issue_title(text: str) -> str:
     if "saddle flashings where decks" in lowered or "saddle flashing" in lowered:
         return "Deck/balcony saddle flashings failed inspection"
     if "height difference between the deck" in lowered or "threshold step-down" in lowered or "threshold step down" in lowered:
+        return "Deck/balcony threshold step-down failed inspection"
+    if "step down" in lowered and "deck/balcony" in lowered:
         return "Deck/balcony threshold step-down failed inspection"
     if "waterproof membrane at the deck" in lowered or "membrane upstand" in lowered:
         return "Deck/balcony membrane upstand is too low"
@@ -228,6 +559,8 @@ def summarize_issue_title(text: str) -> str:
         return "Flexi duct compressed by hydraulics support"
     if "ducting hard pressed against frame" in lowered:
         return "Ducting pressed against frame without clearance"
+    if "duct" in lowered and ("jammed against" in lowered or "no working clearance" in lowered or "insufficient clearance" in lowered):
+        return "Ducting pressed against frame without clearance"
     if "duct clashing with other services" in lowered:
         return "Duct clash requires re-routing to grille"
     if "duct is squeezed by pipework" in lowered:
@@ -251,29 +584,50 @@ def summarize_issue_title(text: str) -> str:
 
     sentence = re.split(r"(?<=[.!?])\s+", cleaned)[0]
     sentence = re.sub(r"^(further to item \d+,?\s*)", "", sentence, flags=re.IGNORECASE)
-    return sentence[:120].rstrip(" ,.;:-") or "Recorded inspection issue"
+    return _clip_phrase(sentence, 120) or "Recorded inspection issue"
 
 
 def categorize_issue(finding: dict[str, Any]) -> str:
     text = _source_text(finding).lower()
-    if "damper" in text or "breakaway" in text:
+    inspection = str(finding.get("inspection_type") or "").lower()
+    combined = f"{text} {inspection}"
+    passive_fire_context = _has_passive_fire_context(combined, inspection)
+    if (passive_fire_context and _has_any_term(combined, ("damper", "breakaway"))) or _has_any_term(combined, ("fire damper",)):
         return "Passive Fire - Dampers"
-    if "plasterboard" in text or "bulkhead" in text:
+    if passive_fire_context and _has_any_term(combined, ("plasterboard", "bulkhead")):
         return "Passive Fire - Linings"
-    if "penetration" in text or "collar" in text or "sealant" in text or "annular gap" in text:
+    if passive_fire_context and _has_any_term(combined, ("penetration", "collar", "sealant", "annular gap")):
         return "Passive Fire - Penetrations"
-    if "lift" in text and "gap" in text:
+    if passive_fire_context and _has_any_term(combined, ("lift",)) and _has_any_term(combined, ("gap",)):
         return "Passive Fire - Lift Interfaces"
-    if "duct" in text:
-        return "Mechanical Ducting"
-    if "pipe" in text or "plumbing" in text:
-        return "Plumbing"
+    if _has_any_term(combined, SURFACE_WATER_KEYWORDS):
+        return "Surface Water / Stormwater"
+    if _has_any_term(combined, WET_AREA_KEYWORDS):
+        return "Internal Moisture / Wet Areas"
+    if _has_any_term(combined, WATERPROOFING_KEYWORDS):
+        return "Waterproofing"
+    if _has_any_term(combined, ENVELOPE_KEYWORDS):
+        return "Envelope"
+    if _has_any_term(combined, MECHANICAL_KEYWORDS):
+        return "Mechanical / Ventilation"
+    if _has_any_term(combined, ELECTRICAL_KEYWORDS):
+        return "Electrical"
+    if _has_any_term(combined, PLUMBING_KEYWORDS):
+        return "Plumbing / Drainage"
+    if _has_any_term(combined, STRUCTURE_KEYWORDS):
+        return "Structure"
+    if _has_any_term(combined, DURABILITY_KEYWORDS):
+        return "Durability"
+    if _has_any_term(combined, ACCESS_SAFETY_KEYWORDS):
+        return "Access / Safety"
+    if _has_any_term(combined, ENERGY_EFFICIENCY_KEYWORDS):
+        return "Energy Efficiency"
     return str(finding.get("category") or finding.get("trade") or "General")
 
 
 def plain_english_summary(finding: dict[str, Any]) -> str:
     title = summarize_issue_title(_source_text(finding))
-    location = finding.get("location") or finding.get("unit_label")
+    location = _clean_location(finding.get("location") or finding.get("unit_label"))
     fix = _specific_required_fix(title, finding.get("required_fix"))
     if location:
         return f"{title} at {location}. {fix}"
@@ -294,6 +648,8 @@ def _specific_required_fix(title: str, extracted_fix: Any) -> str:
         return "Install compliant saddle flashings at deck and balcony wall junctions, then request reinspection."
     if "threshold step-down" in lowered:
         return "Adjust the deck or balcony threshold step-down to match the consented detail and document the measurement."
+    if "ducting pressed against frame" in lowered:
+        return "Create the required duct clearance by trimming the frame if approved or rerouting the duct, then confirm the clearance with QA photos."
     if "membrane upstand" in lowered:
         return "Extend the waterproof membrane upstand to the required height and photograph it with a tape measure."
     if "timber-to-concrete" in lowered:
@@ -311,11 +667,11 @@ def is_actionable_issue(finding: dict[str, Any]) -> tuple[bool, str | None]:
         return False, "Looks like a passed or not-applicable checklist row rather than an open issue."
     if any(term in lowered for term in POSITIVE_OBSERVATIONS) and not any(term in lowered for term in POSITIVE_DEFECT_CUES):
         return False, "Looks like a positive observation rather than a defect."
-    if len(cleaned) < 28 and not any(term in lowered for term in DEFECT_CUES):
+    if len(cleaned) < 28 and not _has_any_term(lowered, DEFECT_CUES):
         return False, "Too short to be a useful actionable issue."
-    if any(term in lowered for term in ACTION_TERMS):
+    if _has_any_term(lowered, ACTION_TERMS):
         return True, None
-    if any(term in lowered for term in ("fire stopping", "penetration", "damper", "plasterboard")) and any(term in lowered for term in ("will", "check", "inspect", "confirm")):
+    if _has_any_term(lowered, ("fire stopping", "penetration", "damper", "plasterboard")) and _has_any_term(lowered, ("will", "check", "inspect", "confirm")):
         return True, None
     return False, "No clear action, defect, or close-out requirement was detected."
 
@@ -376,16 +732,20 @@ def _fallback_label(title: str) -> str:
 
 
 def _source_text(finding: dict[str, Any]) -> str:
-    title = str(finding.get("issue_title") or finding.get("title") or "").strip()
+    title = str(finding.get("title") or finding.get("issue_title") or "").strip()
     description = str(finding.get("description") or "").strip()
-    if description and (len(_clean_text(title)) < 28 or title.lower() in {"suitable", "photo", "photos"}):
+    source_quote = str(finding.get("source_quote") or "").strip()
+    if description and (
+        len(_clean_text(title)) < 28
+        or title.lower() in {"suitable", "photo", "photos"}
+        or _looks_cut_off(title)
+    ):
         return f"{title}. {description}" if title else description
-    return str(
-        finding.get("plain_english_summary")
-        or title
-        or description
-        or ""
-    )
+    if source_quote and _looks_cut_off(title):
+        return f"{title}. {source_quote}" if title else source_quote
+    if title:
+        return title
+    return str(finding.get("plain_english_summary") or description or source_quote or "")
 
 
 def _clean_text(text: str) -> str:
@@ -393,10 +753,124 @@ def _clean_text(text: str) -> str:
     return cleaned.strip(" -*•")
 
 
+def _clean_location(value: Any) -> str | None:
+    cleaned = _clean_text(str(value or ""))
+    if not cleaned:
+        return None
+    return cleaned.rstrip(" .;:")
+
+
+def _trade_label(finding: dict[str, Any]) -> str:
+    raw_trade = str(finding.get("trade") or "").strip()
+    if raw_trade and raw_trade != "General":
+        return raw_trade
+    text = _source_text(finding).lower()
+    inspection = str(finding.get("inspection_type") or "").lower()
+    category = str(finding.get("display_category") or finding.get("category") or "").lower()
+    combined = f"{text} {inspection} {category}"
+    if category in {"plumbing / drainage", "surface water / stormwater", "internal moisture / wet areas"}:
+        return "Plumbing"
+    if category in {"envelope", "waterproofing"}:
+        return "Envelope"
+    if category == "mechanical / ventilation":
+        return "Mechanical"
+    if category == "electrical":
+        return "Electrical"
+    if category == "structure":
+        return "Structure"
+    if _has_passive_fire_context(combined, inspection) or "fire inspection" in inspection:
+        return "Passive Fire"
+    if _has_any_term(combined, MECHANICAL_KEYWORDS):
+        return "Mechanical"
+    if _has_any_term(combined, ELECTRICAL_KEYWORDS):
+        return "Electrical"
+    if _has_any_term(combined, PLUMBING_KEYWORDS):
+        return "Plumbing"
+    if _has_any_term(combined, WATERPROOFING_KEYWORDS) or _has_any_term(combined, ENVELOPE_KEYWORDS):
+        return "Envelope"
+    if _has_any_term(combined, STRUCTURE_KEYWORDS):
+        return "Structure"
+    return raw_trade or "General"
+
+
+def _has_passive_fire_context(text: str, inspection: str) -> bool:
+    if _has_any_term(text, ("passive fire", "fire damper")):
+        return True
+    if _has_any_term(inspection, ("fire", "passive fire")):
+        return True
+    return _has_any_term(text, FIRE_DAMPER_CONTEXT_TERMS)
+
+
+def _has_any_term(text: str, terms: tuple[str, ...]) -> bool:
+    normalized = _clean_text(text).lower()
+    for term in terms:
+        escaped = re.escape(term.lower())
+        if " " in term or "-" in term or "/" in term:
+            if re.search(rf"(?<![a-z0-9]){escaped}(?![a-z0-9])", normalized):
+                return True
+        elif re.search(rf"\b{escaped}\b", normalized):
+            return True
+    return False
+
+
+# TODO: replace first-match keyword ordering with a scored classifier using the
+# extracted issue type, inspection type, source section, council inspection
+# stage, and keyword confidence.
+
+
+def _clip_phrase(text: str, limit: int) -> str:
+    cleaned = _clean_text(text)
+    if len(cleaned) <= limit:
+        return cleaned.rstrip(" ,.;:-")
+    clipped = cleaned[:limit].rstrip()
+    boundary = max(clipped.rfind("; "), clipped.rfind(", "), clipped.rfind(" - "), clipped.rfind(" "))
+    if boundary > int(limit * 0.65):
+        clipped = clipped[:boundary]
+    clipped = clipped.rstrip(" ,.;:-")
+    words = clipped.split()
+    while words and _dangling_word(words[-1]):
+        words.pop()
+    return " ".join(words).rstrip(" ,.;:-")
+
+
+def _looks_cut_off(text: str) -> bool:
+    cleaned = _clean_text(text)
+    if not cleaned:
+        return False
+    words = cleaned.split()
+    last = words[-1] if words else ""
+    if _dangling_word(last):
+        return True
+    if len(cleaned) >= 115 and cleaned[-1] not in ".!?":
+        return True
+    return False
+
+
+def _dangling_word(word: str) -> bool:
+    normalized = re.sub(r"[^A-Za-z0-9-]", "", word).lower()
+    return len(normalized) == 1 or normalized in {
+        "a",
+        "an",
+        "and",
+        "as",
+        "at",
+        "by",
+        "for",
+        "from",
+        "in",
+        "of",
+        "on",
+        "or",
+        "the",
+        "to",
+        "with",
+    }
+
+
 def _looks_like_table_or_drawing_noise(text: str) -> bool:
     cleaned = _clean_text(text)
     lowered = cleaned.lower()
-    if any(term in lowered for term in STRONG_ACTION_TERMS):
+    if _has_any_term(lowered, STRONG_ACTION_TERMS):
         return False
     if "ryanfire" in lowered and any(token in lowered for token in ("cutt", "perimeter", "products ltd", "drawing", "legal proceedings")):
         return True
@@ -404,7 +878,7 @@ def _looks_like_table_or_drawing_noise(text: str) -> bool:
         return True
     letters = re.sub(r"[^A-Za-z]+", "", cleaned)
     uppercase_ratio = sum(1 for ch in letters if ch.isupper()) / max(len(letters), 1)
-    return uppercase_ratio > 0.75 and len(cleaned) < 90 and not any(term in lowered for term in ACTION_TERMS)
+    return uppercase_ratio > 0.75 and len(cleaned) < 90 and not _has_any_term(lowered, ACTION_TERMS)
 
 
 def _looks_like_non_actionable_checklist_result(lowered: str) -> bool:
@@ -413,7 +887,7 @@ def _looks_like_non_actionable_checklist_result(lowered: str) -> bool:
     if "inspection outcome" in lowered and "work completed in accordance" in lowered:
         return True
     has_pass = " pass" in f" {lowered} " or "( pass" in lowered
-    has_defect = any(term in lowered for term in DEFECT_CUES)
+    has_defect = _has_any_term(lowered, DEFECT_CUES)
     if has_pass and not has_defect:
         return True
     return False

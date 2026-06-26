@@ -163,6 +163,28 @@ class OllamaTextExtractorTest(unittest.TestCase):
         self.assertEqual(artifacts.metadata["extractor_mode"], "ollama_text")
         self.assertEqual(calls[0]["headers"]["Authorization"], "Bearer test-key")
         self.assertEqual(calls[0]["payload"]["model"], "gpt-oss:20b")
+        self.assertNotIn('"properties"', calls[0]["payload"]["messages"][1]["content"])
+
+    def test_ollama_options_include_configured_context_and_output_budget(self) -> None:
+        calls = []
+
+        def fake_post_ollama_chat(**kwargs):
+            calls.append(kwargs)
+            return httpx.Response(200, json={"message": {"content": json.dumps(_payload())}})
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            pdf_path = Path(tmp_dir) / "inspection.pdf"
+            _write_pdf(pdf_path, "Fire collar missing in Level 1 riser. Repair required. " * 20)
+            extractor = OllamaTextExtractor(_settings())
+
+            with patch.dict("os.environ", {"SOTERRA_OLLAMA_NUM_CTX": "64000", "SOTERRA_OLLAMA_NUM_PREDICT": "12000"}, clear=False), patch(
+                "soterra_backend.extractors.ollama_text._post_ollama_chat",
+                side_effect=fake_post_ollama_chat,
+            ):
+                extractor.extract(_request(pdf_path.read_bytes()), pdf_path)
+
+        self.assertEqual(calls[0]["payload"]["options"]["num_ctx"], 64000)
+        self.assertEqual(calls[0]["payload"]["options"]["num_predict"], 12000)
 
     def test_image_only_pdf_sends_rendered_pages_to_ollama(self) -> None:
         calls = []

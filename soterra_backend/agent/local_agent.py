@@ -17,7 +17,6 @@ from ..config import DEFAULT_LOCAL_MODEL_ID
 from ..extractors.ollama_model import OllamaModelExtractor
 from ..issue_intelligence import enrich_findings
 from ..models import RepositorySnapshot
-from ..services.issue_query_service import IssueQuery, IssueQueryService
 from ..repositories.base import RepositoryBackend
 from .schemas import AgentChatResponse, AgentRelatedEntities
 
@@ -96,10 +95,11 @@ class LocalOllamaAgentService:
         self.repository.add_agent_chat_message(tenant_id=tenant_id, user_id=user_id, session_id=session.id, role="user", content=message)
 
         snapshot = _active_snapshot(self.repository.load_snapshot(tenant_id))
-        discovery = _issue_discovery_response(self.repository, tenant_id, message, project_slug)
+        discovery = _issue_discovery_response(snapshot, message, project_slug)
         if discovery is not None:
             answer, payload = discovery
             self.repository.add_agent_chat_message(tenant_id=tenant_id, user_id=user_id, session_id=session.id, role="assistant", content=answer)
+            self._store_memory(tenant_id, user_id, session.id, "issue_discovery", payload)
             return AgentChatResponse(
                 session_id=session.id, answer=answer,
                 used_tools=[{"name": "issue_query", "reason": "Applied tenant-scoped issue and location filters."}],
@@ -233,12 +233,17 @@ def _active_snapshot(snapshot: RepositorySnapshot) -> RepositorySnapshot:
     return snapshot.model_copy(update={"documents": active_documents, "findings": enrich_findings(active_findings, actionable_only=True)})
 
 
-def _issue_discovery_response(repository: RepositoryBackend, tenant_id: str, message: str, project_slug: str | None) -> tuple[str, dict] | None:
+def _issue_discovery_response(snapshot: RepositorySnapshot, message: str, project_slug: str | None) -> tuple[str, dict] | None:
     normalized = message.lower()
     if not any(term in normalized for term in ("open issue", "open defect", "needs fixing", "list defects", "show issues")):
         return None
-    service = IssueQueryService(repository)
-    all_result = service.query(tenant_id, IssueQuery(status="Open"))
+    all_items = [_issue_query_card(item) for item in snapshot.findings if str(item.get("status") or "Open") == "Open"]
+    all_result = {
+        "total": len(all_items),
+        "items": all_items,
+        "facets": _issue_facets(all_items),
+        "metrics": _issue_metrics(all_items),
+    }
     facet_values = [entry["value"] for key in ("projects", "addresses", "sites", "levels", "units", "areas", "trades", "severities") for entry in all_result["facets"].get(key, [])]
     has_scope = bool(project_slug) or any(value.lower() in normalized for value in facet_values)
     location_groups: dict[tuple[str, str, str], list[dict]] = {}
@@ -248,15 +253,128 @@ def _issue_discovery_response(repository: RepositoryBackend, tenant_id: str, mes
     if not has_scope and len(location_groups) > 1:
         options = [{"project": key[0], "address": key[1], "location": key[2], "open_issue_count": len(items), "high_priority_count": sum(i.get("severity") in {"High", "Critical"} for i in items)} for key, items in location_groups.items()]
         return "I found open issues in multiple locations. Which location do you want to inspect?", {"type": "location_clarification", "options": options, "follow_up_buttons": [f"Show open issues at {o['location']}" for o in options[:4]]}
-    if not has_scope:
-        return None
     filters: dict = {"status": "Open"}
     if project_slug: filters["project"] = project_slug
     for name, key in (("projects", "project"), ("addresses", "address"), ("sites", "site"), ("levels", "level"), ("units", "unit"), ("areas", "area"), ("trades", "trade"), ("severities", "severity")):
         for entry in all_result["facets"].get(name, []):
             if entry["value"].lower() in normalized: filters[key] = entry["value"]
-    result = service.query(tenant_id, filters)
-    return f"I found {result['total']} matching open issue{'s' if result['total'] != 1 else ''}.", {"type": "issue_cards", **result, "follow_up_buttons": ["Show evidence required", "Show high priority only"]}
+    items = [item for item in all_items if _issue_matches_filters(item, filters)]
+    result = {"total": len(items), "items": items, "facets": _issue_facets(items), "metrics": _issue_metrics(items)}
+    return _format_issue_discovery_answer(result), {"type": "issue_cards", **result, "follow_up_buttons": ["Show evidence required", "Show high priority only"]}
+
+
+def _issue_query_card(item: dict) -> dict:
+    location = item.get("location") or item.get("unit_label") or item.get("unit_or_area")
+    return {
+        "id": item.get("id"),
+        "title": item.get("display_title") or item.get("issue_title") or item.get("title"),
+        "exact_location": location,
+        "project": item.get("project_name"),
+        "project_slug": item.get("project_slug"),
+        "address": item.get("address"),
+        "site": item.get("site_name"),
+        "level": item.get("level"),
+        "unit": item.get("unit_label") or item.get("unit_or_area"),
+        "area": item.get("unit_or_area") or item.get("location"),
+        "severity": item.get("severity"),
+        "trade": item.get("trade"),
+        "status": item.get("status") or "Open",
+        "inspection_type": item.get("inspection_type"),
+        "what_happened": item.get("description"),
+        "why_it_matters": item.get("plain_english_summary"),
+        "what_to_do_next": item.get("required_fix"),
+        "evidence_required": item.get("evidence_required") or [],
+        "source_report": item.get("source_document"),
+        "source_page": item.get("source_page"),
+        "source_quote": item.get("source_quote"),
+        "confidence": item.get("confidence"),
+    }
+
+
+def _issue_facets(items: list[dict]) -> dict:
+    from collections import Counter
+
+    mapping = {
+        "projects": "project",
+        "addresses": "address",
+        "sites": "site",
+        "levels": "level",
+        "units": "unit",
+        "areas": "area",
+        "trades": "trade",
+        "severities": "severity",
+    }
+    return {
+        name: [{"value": value, "count": count} for value, count in Counter(str(item.get(key)) for item in items if item.get(key)).most_common()]
+        for name, key in mapping.items()
+    }
+
+
+def _issue_metrics(items: list[dict]) -> dict:
+    return {
+        "total": len(items),
+        "open": sum(item.get("status") != "Closed" for item in items),
+        "high_priority": sum(item.get("severity") in {"High", "Critical"} for item in items),
+    }
+
+
+def _issue_matches_filters(item: dict, filters: dict) -> bool:
+    checks = (
+        ("project", ("project", "project_slug")),
+        ("address", ("address",)),
+        ("site", ("site",)),
+        ("level", ("level",)),
+        ("unit", ("unit",)),
+        ("area", ("area", "exact_location")),
+        ("trade", ("trade",)),
+        ("severity", ("severity",)),
+    )
+    for expected_key, item_keys in checks:
+        expected = filters.get(expected_key)
+        if expected and not any(str(expected).lower() in str(item.get(key) or "").lower() for key in item_keys):
+            return False
+    return True
+
+
+def _format_issue_discovery_answer(result: dict) -> str:
+    items = result.get("items") if isinstance(result.get("items"), list) else []
+    total = int(result.get("total") or len(items))
+    if not items:
+        return "I do not see matching open issues in the current tenant data. Check that extraction has completed for the uploaded reports."
+
+    critical = sum(item.get("severity") == "Critical" for item in items)
+    high = sum(item.get("severity") == "High" for item in items)
+    projects = sorted({str(item.get("project") or "Unknown project") for item in items})
+    trades = sorted({str(item.get("trade") or "Not stated") for item in items})
+    lines = [
+        f"Open issues: {total}",
+        f"I found {total} matching open issue{'s' if total != 1 else ''}.",
+        f"Priority: {critical} critical and {high} high-priority issue(s).",
+        f"Project/site: {', '.join(projects[:3])}.",
+        f"Main trades: {', '.join(trades[:4])}.",
+        "",
+        "What needs action:",
+    ]
+    severity_rank = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
+    ranked = sorted(items, key=lambda item: (severity_rank.get(str(item.get("severity")), 4), str(item.get("exact_location") or ""), str(item.get("title") or "")))
+    for index, item in enumerate(ranked[:8], start=1):
+        evidence = item.get("evidence_required") or []
+        evidence_text = ", ".join(str(value) for value in evidence if value) if isinstance(evidence, list) else str(evidence)
+        lines.extend(
+            [
+                f"{index}. {item.get('title') or 'Recorded inspection issue'}",
+                f"   Severity: {item.get('severity') or 'Not stated'}",
+                f"   Location: {item.get('exact_location') or 'Not stated'}",
+                f"   Trade: {item.get('trade') or 'Not stated'}",
+                f"   Fix: {item.get('what_to_do_next') or 'Assign an owner, complete the fix, and update the issue status.'}",
+                f"   Evidence: {evidence_text or 'Close-out photos and trade sign-off.'}",
+            ]
+        )
+    if total > len(ranked[:8]):
+        lines.append(f"Showing the first 8 by priority; {total - 8} more matching issue(s) remain.")
+    lines.append("")
+    lines.append("Next action: assign owners for the high-priority items first, collect the listed evidence, then mark each issue ready for reinspection.")
+    return "\n".join(lines)
 
 
 def _route_and_payload(

@@ -10,7 +10,7 @@ from soterra_backend.extraction_quality_gate import ExtractionQualityError, vali
 from soterra_backend.extractors.base import ExtractionArtifacts
 from soterra_backend.extractors.package_doctr import DoctrRulesPresidioExtractor, _build_rule_extraction, extract_issue_blocks
 from soterra_backend.issue_intelligence import enrich_finding
-from soterra_backend.models import ExtractionResult, StoredFile
+from soterra_backend.models import ExtractedFinding, ExtractionResult, StoredFile
 from soterra_backend.services.report_service import IngestionStart, ReportIngestionService, UploadContext
 
 
@@ -178,6 +178,111 @@ class NativeExtractionQualityTest(unittest.TestCase):
                 self.assertEqual(enriched["display_title"], expected)
                 self.assertNotRegex(enriched["plain_english_summary"], r"\b(or|c|in) at ")
 
+    def test_generic_long_title_is_clipped_on_word_boundary(self) -> None:
+        title = (
+            "The mechanical services ductwork has been installed hard against the framing and needs "
+            "coordination review before lining can proceed because the clearance shown on site is not"
+        )
+
+        enriched = enrich_finding(
+            {
+                "title": title,
+                "description": title,
+                "category": "Mechanical",
+                "trade": "Mechanical",
+                "severity": "High",
+                "status": "Open",
+            }
+        )
+
+        self.assertNotRegex(enriched["display_title"], r"\b(not|or|and|the|to|in|of|with)$")
+        self.assertLessEqual(len(enriched["display_title"]), 120)
+
+    def test_live_threshold_issue_gets_concise_display_title_and_trade(self) -> None:
+        enriched = enrich_finding(
+            {
+                "title": "Deck/balcony threshold step down does not comply with plan",
+                "issue_title": "Deck/balcony threshold step down as per plan",
+                "description": "The checklist item was recorded as Fail.",
+                "plain_english_summary": "The step down from inside the building to the deck/balcony must be correct so water running off the deck cannot drain back into the building.",
+                "location": "Exact door/unit not stated in the visible portion of the report.",
+                "inspection_type": "Cavity wrap (ICA)",
+                "category": "Waterproofing",
+                "trade": "General",
+                "severity": "High",
+                "status": "Open",
+                "required_fix": "Review the inspector's photos/comments, measure the threshold step down at each failed door, adjust the deck/balcony structure or threshold detail to meet the approved plan and E2/AS1, then book a re-inspection.",
+            }
+        )
+
+        self.assertEqual(enriched["display_title"], "Deck/balcony threshold step-down failed inspection")
+        self.assertEqual(enriched["trade"], "Envelope")
+        self.assertNotIn("report..", enriched["plain_english_summary"])
+        self.assertNotIn("cannot drain ba", enriched["display_title"])
+
+    def test_live_duct_clearance_issue_gets_concise_display_title(self) -> None:
+        enriched = enrich_finding(
+            {
+                "title": "Mechanical ducting pressed hard against frame - insufficient clearance",
+                "issue_title": "Ducting hard pressed against frame - trim frame to allow clearance",
+                "description": "Mechanical ducting is hard pressed against the structural frame with insufficient clearance.",
+                "plain_english_summary": "A metal duct is jammed against the building frame with no working clearance.",
+                "location": "Sheet location marker M (circled in red) on the Level 3 mechanical plan.",
+                "inspection_type": "Services Inspection",
+                "category": "Mechanical",
+                "trade": "Mechanical",
+                "severity": "Medium",
+                "status": "Open",
+            }
+        )
+
+        self.assertEqual(enriched["display_title"], "Ducting pressed against frame without clearance")
+        self.assertIn("Create the required duct clearance", enriched["plain_english_summary"])
+
+    def test_construction_taxonomy_covers_common_trade_terms(self) -> None:
+        examples = [
+            ("Head flashing missing at window opening", "Envelope", "Envelope"),
+            ("Deck membrane upstand below 150mm minimum", "Waterproofing", "Envelope"),
+            ("Pipe penetration annular gap requires fire sealant", "Passive Fire - Penetrations", "Passive Fire"),
+            ("Mechanical ductwork clashing with framing", "Mechanical / Ventilation", "Mechanical"),
+            ("Data cabling conduit not installed", "Electrical", "Electrical"),
+            ("Hydraulic pipework drainage not isolated", "Plumbing / Drainage", "Plumbing"),
+            ("Structural timber framing requires bracing fix", "Structure", "Structure"),
+            ("Roof cladding junction at parapet incomplete", "Envelope", "Envelope"),
+            ("Gutter outlet and downpipe not installed", "Surface Water / Stormwater", "Plumbing"),
+            ("Shower waterproof lining sealant incomplete", "Internal Moisture / Wet Areas", "Plumbing"),
+            ("Fire separation wall penetration not sealed", "Passive Fire - Penetrations", "Passive Fire"),
+            ("Fire damper breakaway fixing missing", "Passive Fire - Dampers", "Passive Fire"),
+            ("HVAC volume control damper requires adjustment", "Mechanical / Ventilation", "Mechanical"),
+            ("Extract fan duct not connected to grille", "Mechanical / Ventilation", "Mechanical"),
+            ("Socket outlet and light switch missing", "Electrical", "Electrical"),
+            ("Cold water backflow valve not installed", "Plumbing / Drainage", "Plumbing"),
+            ("Foul water discharge pipe not connected", "Plumbing / Drainage", "Plumbing"),
+            ("Foundation footing steel bracing incomplete", "Structure", "Structure"),
+            ("Galvanised fixing corrosion risk requires confirmation", "Durability", "General"),
+            ("Balustrade barrier height below required level", "Access / Safety", "General"),
+            ("Insulation R-value evidence missing", "Energy Efficiency", "General"),
+            ("We conducted a site inspection", "General", "General"),
+            ("Wrap up comments from site meeting", "General", "General"),
+            ("Data sheet provided for product", "General", "General"),
+        ]
+
+        for title, expected_category, expected_trade in examples:
+            with self.subTest(title=title):
+                enriched = enrich_finding(
+                    {
+                        "title": title,
+                        "description": title,
+                        "category": "General",
+                        "trade": "General",
+                        "severity": "Medium",
+                        "status": "Open",
+                    }
+                )
+
+                self.assertEqual(enriched["display_category"], expected_category)
+                self.assertEqual(enriched["trade"], expected_trade)
+
     def test_package_extractor_does_not_run_ocr_when_disabled(self) -> None:
         extractor = DoctrRulesPresidioExtractor(replace(_settings(), package_ocr_enabled=False))
         with patch.dict("os.environ", {"SOTERRA_PACKAGE_OCR_ENABLED": "false"}, clear=False), \
@@ -224,6 +329,31 @@ class NativeExtractionQualityTest(unittest.TestCase):
             validate_extraction_quality(extraction, raw_text)
         self.assertFalse(caught.exception.diagnostics["quality_gate_passed"])
         self.assertGreater(caught.exception.diagnostics["issue_keyword_hits"], 0)
+
+    def test_quality_gate_raises_when_many_findings_are_cut_off(self) -> None:
+        extraction = _empty_extraction().model_copy(
+            update={
+                "findings": [
+                    ExtractedFinding(
+                        title="Fire collar missing or",
+                        description="Fire collar missing or",
+                        severity="High",
+                        required_fix="Install the missing fire collar and upload evidence.",
+                    ),
+                    ExtractedFinding(
+                        title="Ductwork clash requires re-routing",
+                        description="Ductwork is clashing with other services and requires re-routing.",
+                        severity="Medium",
+                        required_fix="Re-route the ductwork and upload QA photos.",
+                    ),
+                ]
+            }
+        )
+
+        with self.assertRaises(ExtractionQualityError) as caught:
+            validate_extraction_quality(extraction, "Fire collar missing. Ductwork clash requires re-routing.")
+
+        self.assertEqual(caught.exception.diagnostics["cut_off_finding_count"], 1)
 
     def test_report_ingestion_does_not_complete_when_quality_gate_fails(self) -> None:
         repo = FakeRepository()

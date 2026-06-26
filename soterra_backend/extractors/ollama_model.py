@@ -25,6 +25,7 @@ Make required_fix specific enough for a trade to complete the work without rerea
 Make evidence_required specific: list the close-out photos, sign-offs, tests, certificates, or inspection records needed.
 Use source_quote for the shortest exact source text that proves the issue.
 Extract location whenever the report gives a level, unit, room, area, elevation, gridline, riser, shaft, lot, or address.
+Titles, descriptions, fixes, and summaries must be complete. Do not end any field with dangling words such as "or", "and", "the", "to", "in", "of", "with", or a single letter.
 Severity rules:
 Critical means failed life safety, fire stopping, waterproofing failure, structural risk, council failure, or urgent reinspection blocker.
 High means non-compliance requiring rework, missing installation, failed checklist item, or close-out blocker.
@@ -80,7 +81,7 @@ class OllamaModelExtractor:
                         {"role": "user", "content": user_prompt},
                     ],
                     "stream": False,
-                    "options": {"temperature": self.temperature},
+                    "options": _ollama_options(self.temperature),
                 },
                 timeout=timeout_seconds or self.timeout_seconds,
             )
@@ -108,7 +109,7 @@ class OllamaModelExtractor:
                     "stream": False,
                     "response_format": _response_format(schema),
                     "format": schema,
-                    "options": {"temperature": self.temperature},
+                    "options": _ollama_options(self.temperature),
                 },
                 timeout=self.timeout_seconds,
             )
@@ -156,6 +157,22 @@ def _response_format(schema: dict) -> dict:
             "schema": schema,
         },
     }
+
+
+def _ollama_options(temperature: float) -> dict[str, Any]:
+    options: dict[str, Any] = {"temperature": temperature}
+    for env_key, option_key in (
+        ("SOTERRA_OLLAMA_NUM_CTX", "num_ctx"),
+        ("SOTERRA_OLLAMA_NUM_PREDICT", "num_predict"),
+    ):
+        value = os.getenv(env_key)
+        if not value:
+            continue
+        try:
+            options[option_key] = int(value)
+        except ValueError:
+            continue
+    return options
 
 
 def _retry_prompt(prompt: str, last_error: Exception | None) -> str:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
@@ -30,6 +31,18 @@ from .upload_validation import (
 logger = logging.getLogger("soterra_backend")
 
 UPLOAD_CHUNK_SIZE = 1024 * 1024
+
+
+def _bulk_worker_count() -> int:
+    try:
+        return int(os.getenv("SOTERRA_BULK_EXTRACTION_WORKERS", "4"))
+    except ValueError:
+        return 4
+
+
+BULK_EXTRACTION_EXECUTOR = ThreadPoolExecutor(
+    max_workers=max(1, min(8, _bulk_worker_count()))
+)
 
 
 @dataclass
@@ -380,6 +393,7 @@ class ReportUploadService:
                     trade=trade,
                     background_tasks=background_tasks,
                     consume_rate_limit=False,
+                    force_background=len(files) > 1,
                 )
                 total_bytes += int(payload.pop("_bytes", 0))
                 if total_bytes > self.settings.max_bulk_upload_bytes:
@@ -411,6 +425,7 @@ class ReportUploadService:
         trade: str,
         background_tasks: BackgroundTasks | None = None,
         consume_rate_limit: bool = False,
+        force_background: bool = False,
     ) -> dict:
         if consume_rate_limit and not self.repository.consume_upload_rate_limit(
             tenant_id=tenant_id,
@@ -477,10 +492,10 @@ class ReportUploadService:
             raise HTTPException(status_code=409, detail="This file has already been uploaded.")
 
         assert start is not None
-        if not self.settings.process_inline:
+        if force_background or not self.settings.process_inline:
             if background_tasks is None:
                 raise HTTPException(status_code=503, detail="Background processing is not available for this upload.")
-            background_tasks.add_task(self.ingestion_service.finish_ingest_safely, start, upload_ctx)
+            background_tasks.add_task(_queue_background_ingest, self.ingestion_service, start, upload_ctx)
             report = self.repository.get_report(tenant_id, start.document_id)
             if not report:
                 raise RuntimeError("The report was queued but could not be loaded back from the repository.")
@@ -581,6 +596,10 @@ async def read_limited_upload(file: UploadFile, max_bytes: int) -> bytes:
 
 def _file_hash(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
+
+
+def _queue_background_ingest(service: ReportIngestionService, start: IngestionStart, upload: UploadContext) -> None:
+    BULK_EXTRACTION_EXECUTOR.submit(service.finish_ingest_safely, start, upload)
 
 
 def _pdf_page_count(content: bytes) -> int:
